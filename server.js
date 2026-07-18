@@ -34,7 +34,7 @@ const DB_FILE = path.join(__dirname, 'data', 'db.json');
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(path.join(__dirname, '.')));
 
 /* ---------- tiny JSON-file "database" ---------- */
 function readDB(){
