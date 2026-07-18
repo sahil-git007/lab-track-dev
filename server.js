@@ -86,7 +86,7 @@ function ensureOwner(){
     fullName: 'System Owner',
     collegeName: 'LabTrack Administration',
     department: 'Administration',
-    collegeCode: 'OWNER',
+    collegeCode: 'GHRCEN',
     username,
     passwordHash: hashPassword(password),
     role: 'owner',
@@ -134,7 +134,7 @@ app.post('/api/auth/register', (req, res) => {
     fullName: fullName.trim(),
     collegeName: collegeName.trim(),
     department: department.trim(),
-    collegeCode: collegeCode.trim(),
+    collegeCode.trim().toUpperCase(),
     username: username.trim(),
     passwordHash: hashPassword(password),
     role: 'student', // everyone starts as Student; Owner/In-Charge can promote later
