@@ -9,14 +9,14 @@
  * user's collegeCode, so different colleges never see each other's records.
  *
  * Roles:
- *   student  — checkout/return, report issues, browse everything in their college
- *   incharge — additionally: add/remove equipment, resolve maintenance
- *   owner    — one global account (that's you, the person deploying this) that
- *              can view every user across every college and promote/demote/remove them
+ *    student  — checkout/return, report issues, browse everything in their college
+ *    incharge — additionally: add/remove equipment, resolve maintenance
+ *    owner    — one global account (that's you, the person deploying this) that
+ *               can view every user across every college and promote/demote/remove them
  *
  * Run:
- *   npm install
- *   npm start
+ *    npm install
+ *    npm start
  * Then open http://localhost:3000
  *
  * IMPORTANT: set OWNER_USERNAME and OWNER_PASSWORD as environment variables
@@ -86,7 +86,7 @@ function ensureOwner(){
     fullName: 'System Owner',
     collegeName: 'LabTrack Administration',
     department: 'Administration',
-    collegeCode: 'GHRCEN',
+    collegeCode: 'GHRCEN', // Forced default matches perfectly
     username,
     passwordHash: hashPassword(password),
     role: 'owner',
@@ -129,15 +129,16 @@ app.post('/api/auth/register', (req, res) => {
   if(db.users.some(u=>u.username.toLowerCase()===uname)){
     return res.status(400).json({ error:'That username is already taken.' });
   }
+  
   const user = {
     id: crypto.randomUUID(),
     fullName: fullName.trim(),
     collegeName: collegeName.trim(),
     department: department.trim(),
-    collegeCode.trim().toUpperCase(),
+    collegeCode: collegeCode.trim().toUpperCase(), // Fixed syntax bug here
     username: username.trim(),
     passwordHash: hashPassword(password),
-    role: 'student', // everyone starts as Student; Owner/In-Charge can promote later
+    role: 'student', 
     createdAt: Date.now()
   };
   db.users.push(user);
@@ -154,12 +155,13 @@ app.post('/api/auth/login', (req, res) => {
   const db = readDB();
   const uname = username.trim().toLowerCase();
   const user = db.users.find(u => u.username.toLowerCase() === uname);
-if (collegeCode.toLowerCase() !== 'ghrcen') {
-    if (collegeCode !== 'GHRCEN') { 
-        return res.status(400).json({ error: "Invalid college code..." });
-    }
-}
-if(!user || !verifyPassword(password, user.passwordHash)){
+  
+  // Clean, unified check for the mandatory code restriction
+  if (collegeCode.trim().toUpperCase() !== 'GHRCEN') {
+    return res.status(400).json({ error: "Invalid college code..." });
+  }
+  
+  if(!user || !verifyPassword(password, user.passwordHash)){
     return res.status(401).json({ error:'Invalid college code, username, or password.' });
   }
   const token = newToken();
@@ -206,14 +208,15 @@ app.delete('/api/owner/users/:id', requireAuth, requireOwner, (req, res) => {
   res.json({ ok:true });
 });
 
-/* ---------- college-scoped key-value storage ----------
-   shared=true  -> namespaced by the logged-in user's collegeCode (everyone
-                   in the same college sees the same equipment/checkouts/etc.)
-   shared=false -> namespaced by the individual user id (personal data) */
+/* ---------- college-scoped key-value storage ---------- */
 app.get('/api/storage/:key', requireAuth, (req, res) => {
   const { key } = req.params;
   const shared = req.query.shared === 'true';
-  const namespace = shared ? `college:${req.user.collegeCode}` : `user:${req.user.id}`;
+  
+  // Clean string sanitation ensures owners and students access the exact same dataset
+  const cleanCollegeCode = (req.user.collegeCode || '').trim().toUpperCase();
+  const namespace = shared ? `college:${cleanCollegeCode}` : `user:${req.user.id}`;
+  
   const value = (req.db.storage[namespace] && req.db.storage[namespace][key] !== undefined) ? req.db.storage[namespace][key] : null;
   res.json({ key, value, shared });
 });
@@ -221,7 +224,10 @@ app.get('/api/storage/:key', requireAuth, (req, res) => {
 app.post('/api/storage/:key', requireAuth, (req, res) => {
   const { key } = req.params;
   const { value, shared } = req.body || {};
-  const namespace = shared ? `college:${req.user.collegeCode}` : `user:${req.user.id}`;
+  
+  const cleanCollegeCode = (req.user.collegeCode || '').trim().toUpperCase();
+  const namespace = shared ? `college:${cleanCollegeCode}` : `user:${req.user.id}`;
+  
   const db = req.db;
   if(!db.storage[namespace]) db.storage[namespace] = {};
   db.storage[namespace][key] = value;
@@ -232,7 +238,10 @@ app.post('/api/storage/:key', requireAuth, (req, res) => {
 app.delete('/api/storage/:key', requireAuth, (req, res) => {
   const { key } = req.params;
   const shared = req.query.shared === 'true';
-  const namespace = shared ? `college:${req.user.collegeCode}` : `user:${req.user.id}`;
+  
+  const cleanCollegeCode = (req.user.collegeCode || '').trim().toUpperCase();
+  const namespace = shared ? `college:${cleanCollegeCode}` : `user:${req.user.id}`;
+  
   const db = req.db;
   if(db.storage[namespace]) delete db.storage[namespace][key];
   writeDB(db);
