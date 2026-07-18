@@ -154,8 +154,10 @@ app.post('/api/auth/login', (req, res) => {
   const db = readDB();
   const uname = username.trim().toLowerCase();
   const user = db.users.find(u => u.username.toLowerCase() === uname);
-if (collegeCode.trim() !== 'GHRCEN') {
-  return res.status(401).json({ error: 'Invalid college code.' });
+if (collegeCode.toLowerCase() !== 'ghrcen') {
+    if (collegeCode !== 'GHRCEN') { 
+        return res.status(400).json({ error: "Invalid college code..." });
+    }
 }
 if(!user || !verifyPassword(password, user.passwordHash)){
     return res.status(401).json({ error:'Invalid college code, username, or password.' });
