@@ -48,6 +48,7 @@ function fmtDate(ts){
   return new Date(ts).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'});
 }
 function esc(s){ return (s||'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function fmtPrice(p){ return (p===null||p===undefined||p==='') ? null : '₹' + Number(p).toLocaleString('en-IN', {maximumFractionDigits:2}); }
 function hoursBetween(a,b){ return Math.max(0, (b-a)/3600000); }
 function renderQR(elId, text, size){
   const el = document.getElementById(elId);
@@ -347,11 +348,17 @@ async function renderInventory(){
         <div class="form-row">
           <div class="form-group"><label>Lab / location</label><input id="eqLocation" placeholder="e.g. Electronics Lab, Rack 3" /></div>
           <div class="form-group"><label>Total quantity</label><input id="eqQty" type="number" min="1" value="1" /></div>
+          <div class="form-group"><label>Price (₹ per unit)</label><input id="eqPrice" type="number" min="0" step="0.01" placeholder="e.g. 25000" /></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>Complete description</label><textarea id="eqDescription" placeholder="Model number, specs, manufacturer, anything worth knowing at a glance…"></textarea></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>How to use</label><textarea id="eqUsage" placeholder="Setup steps, safety notes, calibration reminders…"></textarea></div>
         </div>
         <button class="btn btn-primary" id="eqSubmit">Add equipment</button>
       ` : `
-        <p style="margin:0 0 10px;">You're signed in as <strong>${profileName ? esc(profileName) : 'a guest'}</strong> (${profileName ? 'Student' : 'no profile set yet'}). Only Lab In-Charge accounts can register new equipment.</p>
-        <button class="btn" id="becomeIncharge">${profileName ? 'Switch to Lab In-Charge' : 'Set up your profile'}</button>
+        <p style="margin:0;">Only Lab In-Charge accounts can register new equipment. Ask your Lab In-Charge or Owner to upgrade your role from Manage Users.</p>
       `}
     </div>
     <div class="filter-row">
@@ -368,10 +375,14 @@ async function renderInventory(){
       const name = nameInput.value.trim();
       if(!name){ showToast('Equipment name is required.', 'warn'); nameInput.focus(); return; }
       const qty = Math.max(1, parseInt(document.getElementById('eqQty').value) || 1);
+      const priceVal = document.getElementById('eqPrice').value;
       const tag = await nextTag();
       equipment.unshift({
         id: uid(), tag, name, category: document.getElementById('eqCategory').value.trim()||'General',
         location: document.getElementById('eqLocation').value.trim()||'Unassigned',
+        price: priceVal ? parseFloat(priceVal) : null,
+        description: document.getElementById('eqDescription').value.trim(),
+        usageNotes: document.getElementById('eqUsage').value.trim(),
         totalQty: qty, availableQty: qty, condition:'Good', addedBy: profileName, timestamp: Date.now()
       });
       const ok = await saveList(KEYS.equipment, equipment, true);
@@ -379,14 +390,13 @@ async function renderInventory(){
       showToast(`${name} added as ${tag}.`, 'ok');
       renderInventory();
     };
-  } else {
-    document.getElementById('becomeIncharge').onclick = ()=> promptProfile(true);
   }
   const catSel = document.getElementById('eqFilterCat');
   [...new Set(equipment.map(e=>e.category))].forEach(c=>{
     const o = document.createElement('option'); o.textContent=c; catSel.appendChild(o);
   });
   const confirmingRemove = new Set();
+  const editingDetails = new Set();
   const drawList = ()=>{
     const q = document.getElementById('eqSearch').value.toLowerCase();
     const fc = document.getElementById('eqFilterCat').value;
@@ -400,6 +410,7 @@ async function renderInventory(){
     list.innerHTML = `<div class="grid grid-2">` + filtered.map(e=>{
       const condBadge = e.condition==='Good' ? 'badge-ok' : e.condition==='Damaged' ? 'badge-rust' : 'badge-warn';
       const confirming = confirmingRemove.has(e.id);
+      const editing = editingDetails.has(e.id);
       return `
       <div class="asset-tag">
         <span class="tick-tr"></span><span class="tick-br"></span>
@@ -416,16 +427,27 @@ async function renderInventory(){
         <div class="tag-body">
           <span class="badge badge-neutral">${esc(e.category)}</span>
           <span class="badge badge-neutral">${esc(e.location)}</span>
-          <div style="margin-top:8px;">Available: <strong class="mono">${e.availableQty} / ${e.totalQty}</strong></div>
-          ${isIncharge ? (confirming ? `
-            <div style="margin-top:10px;display:flex;gap:6px;">
-              <span style="font-size:12px;color:var(--rust);align-self:center;">Remove ${esc(e.tag)} permanently?</span>
-              <button class="btn btn-sm" style="border-color:var(--rust);color:var(--rust);" data-confirm-remove="${e.id}">Confirm</button>
-              <button class="btn btn-sm" data-cancel-remove="${e.id}">Cancel</button>
+          <div style="margin-top:8px;">Available: <strong class="mono">${e.availableQty} / ${e.totalQty}</strong>${fmtPrice(e.price) ? ` · Price: <strong class="mono">${fmtPrice(e.price)}</strong>` : ''}</div>
+          ${e.description ? `<div style="margin-top:6px;color:var(--ink-soft);">${esc(e.description.length>140 ? e.description.slice(0,140)+'…' : e.description)}</div>` : ''}
+          ${!e.price && !e.description && !e.usageNotes && isIncharge ? `<div style="margin-top:6px;font-size:12px;color:var(--amber);">No price/description/usage info yet.</div>` : ''}
+          ${isIncharge ? (editing ? `
+            <div style="margin-top:10px;border-top:1px solid var(--grid);padding-top:10px;">
+              <div class="form-group" style="margin-bottom:8px;"><label>Price (₹ per unit)</label><input id="editPrice-${e.id}" type="number" min="0" step="0.01" value="${e.price ?? ''}" /></div>
+              <div class="form-group" style="margin-bottom:8px;"><label>Description</label><textarea id="editDesc-${e.id}">${esc(e.description||'')}</textarea></div>
+              <div class="form-group" style="margin-bottom:8px;"><label>How to use</label><textarea id="editUsage-${e.id}">${esc(e.usageNotes||'')}</textarea></div>
+              <div style="display:flex;gap:8px;">
+                <button class="btn btn-primary btn-sm" data-save-details="${e.id}">Save</button>
+                <button class="btn btn-sm" data-cancel-edit="${e.id}">Cancel</button>
+              </div>
             </div>
           ` : `
-            <div style="margin-top:10px;">
-              <button class="btn btn-sm" data-remove="${e.id}">Remove equipment</button>
+            <div style="margin-top:10px;display:flex;gap:8px;">
+              <button class="btn btn-sm" data-edit-details="${e.id}">Edit details</button>
+              ${confirming ? `
+                <span style="font-size:12px;color:var(--rust);align-self:center;">Remove ${esc(e.tag)} permanently?</span>
+                <button class="btn btn-sm" style="border-color:var(--rust);color:var(--rust);" data-confirm-remove="${e.id}">Confirm</button>
+                <button class="btn btn-sm" data-cancel-remove="${e.id}">Cancel</button>
+              ` : `<button class="btn btn-sm" data-remove="${e.id}">Remove equipment</button>`}
             </div>
           `) : ''}
         </div>
@@ -433,6 +455,28 @@ async function renderInventory(){
     }).join('') + `</div>`;
     filtered.forEach(e=> renderQR('qr-'+e.id, e.tag, 62));
 
+    list.querySelectorAll('[data-edit-details]').forEach(b=> b.onclick = ()=>{
+      editingDetails.add(b.dataset.editDetails);
+      drawList();
+    });
+    list.querySelectorAll('[data-cancel-edit]').forEach(b=> b.onclick = ()=>{
+      editingDetails.delete(b.dataset.cancelEdit);
+      drawList();
+    });
+    list.querySelectorAll('[data-save-details]').forEach(b=> b.onclick = async ()=>{
+      if(!requireIncharge()) return;
+      const eqId = b.dataset.saveDetails;
+      const eq = equipment.find(x=>x.id===eqId);
+      const priceVal = document.getElementById('editPrice-'+eqId).value;
+      eq.price = priceVal ? parseFloat(priceVal) : null;
+      eq.description = document.getElementById('editDesc-'+eqId).value.trim();
+      eq.usageNotes = document.getElementById('editUsage-'+eqId).value.trim();
+      const ok = await saveList(KEYS.equipment, equipment, true);
+      if(!ok){ showToast('Could not save — check your connection and try again.', 'error'); return; }
+      showToast(`${eq.name} details updated.`, 'ok');
+      editingDetails.delete(eqId);
+      drawList();
+    });
     list.querySelectorAll('[data-remove]').forEach(b=> b.onclick = ()=>{
       confirmingRemove.add(b.dataset.remove);
       drawList();
@@ -845,10 +889,22 @@ async function lookupAndShow(tagOrId){
         <div class="tag-body">
           <span class="badge badge-neutral">${esc(eq.category)}</span>
           <span class="badge badge-neutral">${esc(eq.location)}</span>
-          <div style="margin-top:8px;">Available: <strong class="mono">${eq.availableQty} / ${eq.totalQty}</strong></div>
+          <div style="margin-top:8px;">Available: <strong class="mono">${eq.availableQty} / ${eq.totalQty}</strong>${fmtPrice(eq.price) ? ` · Price: <strong class="mono">${fmtPrice(eq.price)}</strong>` : ''}</div>
           <div style="margin-top:4px;color:var(--ink-soft);">Registered by ${esc(eq.addedBy)} · ${fmtDate(eq.timestamp)}</div>
         </div>
       </div>
+
+      ${eq.description ? `
+        <div style="margin-bottom:14px;">
+          <div style="font-size:12px;font-weight:700;color:var(--ink-soft);text-transform:uppercase;letter-spacing:0.03em;margin-bottom:6px;">Description</div>
+          <div style="font-size:13.5px;line-height:1.5;white-space:pre-wrap;">${esc(eq.description)}</div>
+        </div>` : ''}
+
+      ${eq.usageNotes ? `
+        <div style="margin-bottom:14px;">
+          <div style="font-size:12px;font-weight:700;color:var(--ink-soft);text-transform:uppercase;letter-spacing:0.03em;margin-bottom:6px;">How to use</div>
+          <div style="font-size:13.5px;line-height:1.5;white-space:pre-wrap;background:var(--paper);border:1px solid var(--grid);border-radius:6px;padding:10px 12px;">${esc(eq.usageNotes)}</div>
+        </div>` : ''}
 
       ${activeCheckout ? `
         <div style="margin-bottom:14px;">
@@ -958,4 +1014,3 @@ async function renderUsers(){
 }
 
 boot();
-
