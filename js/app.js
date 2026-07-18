@@ -145,6 +145,9 @@ function renderAuthScreen(mode, errorMsg){
       <div class="form-group"><label>Password</label><input id="loPassword" type="password" /></div>
       <button class="btn btn-primary" id="loSubmit">Sign in</button>
       <div class="switch-mode">New here? <a id="toRegister">Create an account</a></div>
+      <div style="text-align: center; margin-top: 25px; font-size: 0.825rem; color: #64748b; border-top: 1px dashed #e2e8f0; padding-top: 15px;">
+        Made with ❤️ by <a href="https://github.com/sahil-git007" target="_blank" style="color: #16324F; font-weight: 600; text-decoration: none;">Sahil Sahoo</a>
+      </div>
     `;
     document.getElementById('toRegister').onclick = ()=> renderAuthScreen('register');
     const submit = async ()=>{
