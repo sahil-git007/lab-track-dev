@@ -49,6 +49,21 @@ function fmtDate(ts){
 }
 function esc(s){ return (s||'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function fmtPrice(p){ return (p===null||p===undefined||p==='') ? null : '₹' + Number(p).toLocaleString('en-IN', {maximumFractionDigits:2}); }
+function isSafeUrl(u){ return /^https?:\/\//i.test((u||'').trim()); }
+function videoEmbedHtml(url){
+  if(!url || !isSafeUrl(url)) return '';
+  const clean = url.trim();
+  const isDirect = /\.(mp4|webm|ogg)(\?.*)?$/i.test(clean);
+  if(isDirect){
+    return `<video controls preload="metadata" style="width:100%;max-width:480px;border-radius:8px;border:1px solid var(--grid);margin-top:6px;display:block;">
+      <source src="${esc(clean)}" type="video/mp4">
+      Your browser can't play this video inline. <a href="${esc(clean)}" target="_blank" rel="noopener">Open it directly</a>.
+    </video>`;
+  }
+  // Not a direct video file (e.g. a YouTube/Drive share link) — link out instead,
+  // since <video> only plays raw video files, not hosting-site page URLs.
+  return `<a class="btn btn-sm" href="${esc(clean)}" target="_blank" rel="noopener">▶ Watch video</a>`;
+}
 function hoursBetween(a,b){ return Math.max(0, (b-a)/3600000); }
 function renderQR(elId, text, size){
   const el = document.getElementById(elId);
@@ -356,6 +371,9 @@ async function renderInventory(){
         <div class="form-row">
           <div class="form-group"><label>How to use</label><textarea id="eqUsage" placeholder="Setup steps, safety notes, calibration reminders…"></textarea></div>
         </div>
+        <div class="form-row">
+          <div class="form-group"><label>Video link (optional)</label><input id="eqVideo" type="url" placeholder="Direct .mp4 link, or a YouTube/Drive share link" /></div>
+        </div>
         <button class="btn btn-primary" id="eqSubmit">Add equipment</button>
       ` : `
         <p style="margin:0;">Only Lab In-Charge accounts can register new equipment. Ask your Lab In-Charge or Owner to upgrade your role from Manage Users.</p>
@@ -383,6 +401,7 @@ async function renderInventory(){
         price: priceVal ? parseFloat(priceVal) : null,
         description: document.getElementById('eqDescription').value.trim(),
         usageNotes: document.getElementById('eqUsage').value.trim(),
+        videoUrl: document.getElementById('eqVideo').value.trim(),
         totalQty: qty, availableQty: qty, condition:'Good', addedBy: profileName, timestamp: Date.now()
       });
       const ok = await saveList(KEYS.equipment, equipment, true);
@@ -429,12 +448,14 @@ async function renderInventory(){
           <span class="badge badge-neutral">${esc(e.location)}</span>
           <div style="margin-top:8px;">Available: <strong class="mono">${e.availableQty} / ${e.totalQty}</strong>${fmtPrice(e.price) ? ` · Price: <strong class="mono">${fmtPrice(e.price)}</strong>` : ''}</div>
           ${e.description ? `<div style="margin-top:6px;color:var(--ink-soft);">${esc(e.description.length>140 ? e.description.slice(0,140)+'…' : e.description)}</div>` : ''}
-          ${!e.price && !e.description && !e.usageNotes && isIncharge ? `<div style="margin-top:6px;font-size:12px;color:var(--amber);">No price/description/usage info yet.</div>` : ''}
+          ${e.videoUrl ? `<span class="badge badge-ok" style="margin-top:6px;display:inline-block;">▶ Has video</span>` : ''}
+          ${!e.price && !e.description && !e.usageNotes && !e.videoUrl && isIncharge ? `<div style="margin-top:6px;font-size:12px;color:var(--amber);">No price/description/usage/video info yet.</div>` : ''}
           ${isIncharge ? (editing ? `
             <div style="margin-top:10px;border-top:1px solid var(--grid);padding-top:10px;">
               <div class="form-group" style="margin-bottom:8px;"><label>Price (₹ per unit)</label><input id="editPrice-${e.id}" type="number" min="0" step="0.01" value="${e.price ?? ''}" /></div>
               <div class="form-group" style="margin-bottom:8px;"><label>Description</label><textarea id="editDesc-${e.id}">${esc(e.description||'')}</textarea></div>
               <div class="form-group" style="margin-bottom:8px;"><label>How to use</label><textarea id="editUsage-${e.id}">${esc(e.usageNotes||'')}</textarea></div>
+              <div class="form-group" style="margin-bottom:8px;"><label>Video link</label><input id="editVideo-${e.id}" type="url" value="${esc(e.videoUrl||'')}" placeholder="Direct .mp4 link, or a YouTube/Drive share link" /></div>
               <div style="display:flex;gap:8px;">
                 <button class="btn btn-primary btn-sm" data-save-details="${e.id}">Save</button>
                 <button class="btn btn-sm" data-cancel-edit="${e.id}">Cancel</button>
@@ -471,6 +492,7 @@ async function renderInventory(){
       eq.price = priceVal ? parseFloat(priceVal) : null;
       eq.description = document.getElementById('editDesc-'+eqId).value.trim();
       eq.usageNotes = document.getElementById('editUsage-'+eqId).value.trim();
+      eq.videoUrl = document.getElementById('editVideo-'+eqId).value.trim();
       const ok = await saveList(KEYS.equipment, equipment, true);
       if(!ok){ showToast('Could not save — check your connection and try again.', 'error'); return; }
       showToast(`${eq.name} details updated.`, 'ok');
@@ -788,11 +810,17 @@ async function startCamera(){
   if(scanStream){ return; } // already running — avoid starting a second stream/loop
 
   if(typeof jsQR === 'undefined'){
-    statusEl.textContent = 'QR decoding library failed to load — use manual lookup instead.';
+    statusEl.textContent = 'QR decoding library failed to load (often a blocked CDN or ad-blocker) — use manual lookup instead.';
     return;
   }
   if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
-    statusEl.textContent = 'This browser/context has no camera API available (camera also requires HTTPS or localhost) — use manual lookup instead.';
+    statusEl.textContent = 'This browser/context has no camera API available — use manual lookup instead.';
+    return;
+  }
+  // getUserMedia only works on HTTPS (or http://localhost) — on a plain http://
+  // deployment it fails every time with no useful browser error, so catch it here.
+  if(location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1'){
+    statusEl.textContent = 'Camera requires a secure (https://) connection. This page is loaded over http — use manual lookup instead, or access the site via https.';
     return;
   }
 
@@ -809,9 +837,12 @@ async function startCamera(){
       scanStream = await navigator.mediaDevices.getUserMedia({ video:true });
     }catch(e2){
       startBtn.disabled = false;
-      const msg = (e2 && (e2.name==='NotAllowedError'))
-        ? 'Camera permission was denied — allow camera access in your browser settings, or use manual lookup below.'
-        : 'Camera could not be started, which is common inside embedded previews. Try opening this file directly in a browser tab, or use manual lookup below.';
+      const name = e2 && e2.name;
+      const msg =
+        name==='NotAllowedError' ? 'Camera permission was denied — allow camera access for this site in your browser settings, then try again.' :
+        name==='NotFoundError' ? 'No camera was found on this device — use manual lookup instead.' :
+        name==='NotReadableError' ? 'Another app is already using the camera — close it and try again.' :
+        'Camera could not be started, which is common inside embedded previews or app webviews. Try opening this site directly in a normal browser tab, or use manual lookup below.';
       statusEl.textContent = msg;
       return;
     }
@@ -832,23 +863,39 @@ async function startCamera(){
   statusEl.textContent = 'Scanning…';
   const ctx = canvas.getContext('2d', { willReadFrequently:true });
   let sized = false;
+  let consecutiveErrors = 0;
 
   const tick = ()=>{
     if(!scanStream) return; // camera was stopped
-    if(video.readyState === video.HAVE_ENOUGH_DATA){
-      if(!sized){
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-        sized = true;
+    try{
+      if(video.readyState === video.HAVE_ENOUGH_DATA && video.videoWidth > 0 && video.videoHeight > 0){
+        if(!sized){
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+          sized = true;
+        }
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const code = jsQR(imageData.data, imageData.width, imageData.height);
+        consecutiveErrors = 0;
+        if(code && code.data){
+          statusEl.textContent = 'Match found: ' + code.data;
+          stopCamera();
+          resetCameraUI();
+          lookupAndShow(code.data);
+          return;
+        }
       }
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      const code = jsQR(imageData.data, imageData.width, imageData.height);
-      if(code && code.data){
-        statusEl.textContent = 'Match found: ' + code.data;
+    }catch(err){
+      // A single bad frame (e.g. transient zero-size frame) must never kill
+      // scanning silently — log it, count it, and keep going. Only give up
+      // and tell the user if errors keep happening frame after frame.
+      console.error('QR scan frame error', err);
+      consecutiveErrors++;
+      if(consecutiveErrors > 30){
+        statusEl.textContent = 'Scanning ran into a repeated error — try Stop then Start again, or use manual lookup below.';
         stopCamera();
         resetCameraUI();
-        lookupAndShow(code.data);
         return;
       }
     }
@@ -904,6 +951,12 @@ async function lookupAndShow(tagOrId){
         <div style="margin-bottom:14px;">
           <div style="font-size:12px;font-weight:700;color:var(--ink-soft);text-transform:uppercase;letter-spacing:0.03em;margin-bottom:6px;">How to use</div>
           <div style="font-size:13.5px;line-height:1.5;white-space:pre-wrap;background:var(--paper);border:1px solid var(--grid);border-radius:6px;padding:10px 12px;">${esc(eq.usageNotes)}</div>
+        </div>` : ''}
+
+      ${eq.videoUrl ? `
+        <div style="margin-bottom:14px;">
+          <div style="font-size:12px;font-weight:700;color:var(--ink-soft);text-transform:uppercase;letter-spacing:0.03em;margin-bottom:6px;">Video</div>
+          ${videoEmbedHtml(eq.videoUrl)}
         </div>` : ''}
 
       ${activeCheckout ? `
