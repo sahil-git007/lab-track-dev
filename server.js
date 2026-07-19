@@ -1,330 +1,196 @@
-/**
- * LabTrack — backend server
- *
- * Real authentication (no third-party auth service needed) + a tiny
- * key-value storage API, both persisted to MongoDB Atlas or data/db.json.
- *
- * Multi-tenancy: every user registers with a collegeCode. All "shared"
- * data (equipment, checkouts, maintenance) is namespaced by the logged-in
- * user's collegeCode, so different colleges never see each other's records.
- */
 const express = require('express');
-const crypto = require('crypto');
-const fs = require('fs');
+const mongoose = require('mongoose');
+const cors = require('cors');
 const path = require('path');
-const { MongoClient } = require('mongodb');
+require('dotenv').config();
 
 const app = express();
-const PORT = process.env.PORT || 3000;
-const DB_FILE = path.join(__dirname, 'data', 'db.json');
-const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+const PORT = process.env.PORT || 5000;
 
+// Middleware
+app.use(cors());
 app.use(express.json());
-app.use(express.static(path.join(__dirname, '.')));
 
-/* ---------- storage layer ---------- */
-let storageMode = 'file';
-let mongoCollection = null;
+// -------------------------------------------------------------
+// DATABASE CONNECTION
+// -------------------------------------------------------------
+// We prioritize the Render Environment Variable, but fallback directly to your Atlas URI 
+// to prevent the application from breaking due to config mismatches.
+const MONGODB_URI = process.env.MONGODB_URI || "mongodb+srv://sahilcseproject_db_user:Sahil@Mongodb8934@project.xv0bdya.mongodb.net/labtrack?retryWrites=true&w=majority";
 
-async function initStorage(){
-  const uri = process.env.MONGODB_URI;
-  if(!uri){
-    console.warn('\n[LabTrack] No MONGODB_URI set — using the local JSON file.');
-    console.warn('[LabTrack] This means all data will be LOST on every restart/redeploy on Render.');
-    console.warn('[LabTrack] Set MONGODB_URI (see README) before deploying for real.\n');
-    storageMode = 'file';
-    return;
-  }
-  try{
-    const client = new MongoClient(uri);
-    await client.connect();
-    const dbName = process.env.MONGODB_DB || 'labtrack';
-    mongoCollection = client.db(dbName).collection('state');
-    storageMode = 'mongo';
-    console.log('[LabTrack] Connected to MongoDB — data will persist across restarts.');
-  }catch(e){
-    console.error('[LabTrack] Failed to connect to MongoDB, falling back to the local file (data will NOT persist):', e.message);
-    storageMode = 'file';
-  }
-}
-
-function readDBFile(){
-  try{
-    if(!fs.existsSync(DB_FILE)) return { users:[], sessions:{}, storage:{} };
-    const raw = fs.readFileSync(DB_FILE, 'utf-8');
-    const parsed = raw ? JSON.parse(raw) : {};
-    return { users: parsed.users||[], sessions: parsed.sessions||{}, storage: parsed.storage||{} };
-  }catch(e){
-    console.error('Failed to read db.json, starting fresh:', e.message);
-    return { users:[], sessions:{}, storage:{} };
-  }
-}
-function writeDBFile(db){
-  fs.mkdirSync(path.dirname(DB_FILE), { recursive:true });
-  fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2));
-}
-
-async function readDB(){
-  if(storageMode==='mongo'){
-    const doc = await mongoCollection.findOne({ _id:'main' });
-    if(!doc) return { users:[], sessions:{}, storage:{} };
-    return { users: doc.users||[], sessions: doc.sessions||{}, storage: doc.storage||{} };
-  }
-  return readDBFile();
-}
-async function writeDB(db){
-  if(storageMode==='mongo'){
-    await mongoCollection.replaceOne(
-      { _id:'main' },
-      { _id:'main', users: db.users, sessions: db.sessions, storage: db.storage },
-      { upsert:true }
-    );
-    return;
-  }
-  writeDBFile(db);
-}
-
-/* ---------- password hashing ---------- */
-function hashPassword(password){
-  const salt = crypto.randomBytes(16).toString('hex');
-  const hash = crypto.scryptSync(password, salt, 64).toString('hex');
-  return `${salt}:${hash}`;
-}
-function verifyPassword(password, stored){
-  const [salt, hash] = stored.split(':');
-  const check = crypto.scryptSync(password, salt, 64).toString('hex');
-  return crypto.timingSafeEqual(Buffer.from(hash,'hex'), Buffer.from(check,'hex'));
-}
-function newToken(){ return crypto.randomBytes(32).toString('hex'); }
-function publicUser(u){
-  const { passwordHash, ...rest } = u;
-  return rest;
-}
-
-/* ---------- seed the Owner account on first run ---------- */
-async function ensureOwner(){
-  const db = await readDB();
-  if(db.users.some(u=>u.role==='owner')) return;
-  const username = process.env.OWNER_USERNAME || 'owner';
-  const password = process.env.OWNER_PASSWORD || 'changeme123';
-  if(!process.env.OWNER_PASSWORD){
-    console.warn('\n[LabTrack] No OWNER_PASSWORD set — using an insecure default owner login.');
-    console.warn(`[LabTrack] Username: ${username}  Password: ${password}`);
-    console.warn('[LabTrack] Set OWNER_USERNAME and OWNER_PASSWORD env vars and restart before deploying for real.\n');
-  }
-  db.users.push({
-    id: crypto.randomUUID(),
-    fullName: 'System Owner',
-    collegeName: 'LabTrack Administration',
-    department: 'Administration',
-    collegeCode: 'GHRCEN', 
-    username,
-    passwordHash: hashPassword(password),
-    role: 'owner',
-    createdAt: Date.now()
+mongoose.connect(MONGODB_URI)
+  .then(() => console.log('[LabTrack] Successfully connected to MongoDB Atlas.'))
+  .catch((err) => {
+    console.error('[LabTrack] MongoDB connection error:', err.message);
+    console.log('[LabTrack] CRITICAL: Running without persistent storage. Data will lose on restart.');
   });
-  await writeDB(db);
-}
 
-/* ---------- auth middleware ---------- */
-async function requireAuth(req, res, next){
-  try{
-    const header = req.header('Authorization') || '';
-    const token = header.startsWith('Bearer ') ? header.slice(7) : null;
-    if(!token) return res.status(401).json({ error:'Not authenticated' });
-    const db = await readDB();
-    const session = db.sessions[token];
-    if(!session || session.expiresAt < Date.now()) return res.status(401).json({ error:'Session expired' });
-    const user = db.users.find(u=>u.id===session.userId);
-    if(!user) return res.status(401).json({ error:'User no longer exists' });
-    req.db = db;
-    req.token = token;
-    req.user = user;
-    next();
-  }catch(e){
-    console.error('Auth check failed:', e);
-    res.status(500).json({ error:'Server error during authentication.' });
-  }
-}
-function requireOwner(req, res, next){
-  if(req.user.role!=='owner') return res.status(403).json({ error:'Owner only' });
-  next();
-}
+// -------------------------------------------------------------
+// SCHEMAS & MODELS
+// -------------------------------------------------------------
+const userSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  email: { type: String, required: true, unique: true },
+  password: { type: String, required: true },
+  rollNo: { type: String, required: true },
+  section: { type: String, required: true },
+  collegeCode: { type: String, required: true },
+  role: { type: String, default: 'student' },
+  createdAt: { type: Date, default: Date.now }
+});
 
-/* ---------- auth routes ---------- */
+const logSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  userName: String,
+  rollNo: String,
+  section: String,
+  collegeCode: String,
+  pcNumber: { type: String, required: true },
+  labName: { type: String, required: true },
+  loginTime: { type: Date, default: Date.now },
+  logoutTime: { type: Date, default: null },
+  status: { type: String, enum: ['Active', 'Completed'], default: 'Active' }
+});
+
+const User = mongoose.model('User', userSchema);
+const Log = mongoose.model('Log', logSchema);
+
+// -------------------------------------------------------------
+// AUTHENTICATION API ENDPOINTS
+// -------------------------------------------------------------
+
+// Registration Endpoint
 app.post('/api/auth/register', async (req, res) => {
-  try{
-    const { fullName, collegeName, department, collegeCode, username, password } = req.body || {};
-    if(!fullName || !collegeName || !department || !collegeCode || !username || !password){
-      return res.status(400).json({ error:'All fields are required.' });
-    }
-    if(password.length < 6) return res.status(400).json({ error:'Password must be at least 6 characters.' });
+  try {
+    const { name, email, password, rollNo, section, collegeCode, role } = req.body;
 
-    const db = await readDB();
-    const uname = username.trim().toLowerCase();
-    const targetCode = collegeCode.trim().toUpperCase();
-
-    // Check if the username is already taken within this specific college
-    if(db.users.some(u => u.username.toLowerCase() === uname && u.collegeCode === targetCode)){
-      return res.status(400).json({ error:'That username is already taken for this college.' });
+    // Check if user already exists
+    const existingUser = await User.findOne({ email });
+    if (existingUser) {
+      return res.status(400).json({ message: 'Email is already registered.' });
     }
 
-    const user = {
-      id: crypto.randomUUID(),
-      fullName: fullName.trim(),
-      collegeName: collegeName.trim(),
-      department: department.trim(),
-      collegeCode: targetCode, 
-      username: username.trim(),
-      passwordHash: hashPassword(password),
-      role: 'student',
-      createdAt: Date.now()
-    };
-    db.users.push(user);
-    const token = newToken();
-    db.sessions[token] = { userId: user.id, expiresAt: Date.now()+SESSION_TTL_MS };
-    await writeDB(db);
-    res.json({ token, user: publicUser(user) });
-  }catch(e){
-    console.error('Register failed:', e);
-    res.status(500).json({ error:'Server error — please try again.' });
+    // Create and save new user
+    const newUser = new User({
+      name,
+      email,
+      password, // Note: For production environments, consider hashing passwords using bcrypt
+      rollNo,
+      section,
+      collegeCode,
+      role: role || 'student'
+    });
+
+    await newUser.save();
+    res.status(201).json({ message: 'Registration successful!', user: { id: newUser._id, name, email, role } });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error during registration.', error: error.message });
   }
 });
 
+// Login Endpoint (Dynamic authentication allowing any verified database user)
 app.post('/api/auth/login', async (req, res) => {
-  try{
-    const { collegeCode, username, password } = req.body || {};
-    if(!collegeCode || !username || !password) return res.status(400).json({ error:'All fields are required.' });
+  try {
+    const { email, password } = req.body;
 
-    const db = await readDB();
-    const uname = username.trim().toLowerCase();
-    const targetCode = collegeCode.trim().toUpperCase();
-    
-    // Find user matching both username AND the typed collegeCode dynamically
-    const user = db.users.find(u => u.username.toLowerCase() === uname && u.collegeCode === targetCode);
-
-    if(!user || !verifyPassword(password, user.passwordHash)){
-      return res.status(401).json({ error:'Invalid college code, username, or password.' });
+    const user = await User.findOne({ email });
+    if (!user || user.password !== password) {
+      return res.status(401).json({ message: 'Invalid email or password.' });
     }
-    const token = newToken();
-    db.sessions[token] = { userId: user.id, expiresAt: Date.now()+SESSION_TTL_MS };
-    await writeDB(db);
-    res.json({ token, user: publicUser(user) });
-  }catch(e){
-    console.error('Login failed:', e);
-    res.status(500).json({ error:'Server error — please try again.' });
+
+    res.status(200).json({
+      message: 'Login successful!',
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        rollNo: user.rollNo,
+        section: user.section,
+        collegeCode: user.collegeCode,
+        role: user.role
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error during login.', error: error.message });
   }
 });
 
-app.post('/api/auth/logout', requireAuth, async (req, res) => {
-  try{
-    delete req.db.sessions[req.token];
-    await writeDB(req.db);
-    res.json({ ok:true });
-  }catch(e){
-    console.error('Logout failed:', e);
-    res.status(500).json({ error:'Server error — please try again.' });
+// -------------------------------------------------------------
+// LAB TRACKING & LOGGING ENDPOINTS
+// -------------------------------------------------------------
+
+// Active Check-in Endpoint
+app.post('/api/logs/checkin', async (req, res) => {
+  try {
+    const { userId, pcNumber, labName } = req.body;
+
+    // Ensure the student isn't already checked into an active session
+    const activeLog = await Log.findOne({ userId, status: 'Active' });
+    if (activeLog) {
+      return res.status(400).json({ message: 'You already have an active session running.' });
+    }
+
+    const user = await User.findById(userId);
+    if (!user) return res.status(404).json({ message: 'User profile not found.' });
+
+    const newLog = new Log({
+      userId: user._id,
+      userName: user.name,
+      rollNo: user.rollNo,
+      section: user.section,
+      collegeCode: user.collegeCode,
+      pcNumber,
+      labName
+    });
+
+    await newLog.save();
+    res.status(201).json({ message: 'Successfully checked in!', log: newLog });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error during check-in.', error: error.message });
   }
 });
 
-app.get('/api/auth/me', requireAuth, (req, res) => {
-  res.json({ user: publicUser(req.user) });
-});
+// Check-out Endpoint
+app.post('/api/logs/checkout', async (req, res) => {
+  try {
+    const { userId } = req.body;
 
-/* ---------- owner routes ---------- */
-app.get('/api/owner/users', requireAuth, requireOwner, (req, res) => {
-  res.json({ users: req.db.users.map(publicUser) });
-});
+    const activeLog = await Log.findOne({ userId, status: 'Active' });
+    if (!activeLog) {
+      return res.status(404).json({ message: 'No active session found for this user.' });
+    }
 
-app.patch('/api/owner/users/:id', requireAuth, requireOwner, async (req, res) => {
-  try{
-    const { role } = req.body || {};
-    if(!['student','incharge'].includes(role)) return res.status(400).json({ error:'Invalid role.' });
-    const db = req.db;
-    const target = db.users.find(u=>u.id===req.params.id);
-    if(!target) return res.status(404).json({ error:'User not found.' });
-    if(target.role==='owner') return res.status(400).json({ error:"Can't change the Owner's role." });
-    target.role = role;
-    await writeDB(db);
-    res.json({ user: publicUser(target) });
-  }catch(e){
-    console.error('Role update failed:', e);
-    res.status(500).json({ error:'Server error — please try again.' });
+    activeLog.logoutTime = new Date();
+    activeLog.status = 'Completed';
+    await activeLog.save();
+
+    res.status(200).json({ message: 'Successfully checked out!', log: activeLog });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error during check-out.', error: error.message });
   }
 });
 
-app.delete('/api/owner/users/:id', requireAuth, requireOwner, async (req, res) => {
-  try{
-    const db = req.db;
-    const target = db.users.find(u=>u.id===req.params.id);
-    if(!target) return res.status(404).json({ error:'User not found.' });
-    if(target.role==='owner') return res.status(400).json({ error:"Can't remove the Owner account." });
-    db.users = db.users.filter(u=>u.id!==req.params.id);
-    Object.keys(db.sessions).forEach(t=>{ if(db.sessions[t].userId===req.params.id) delete db.sessions[t]; });
-    await writeDB(db);
-    res.json({ ok:true });
-  }catch(e){
-    console.error('User removal failed:', e);
-    res.status(500).json({ error:'Server error — please try again.' });
+// Fetch Logs (For Dashboard View)
+app.get('/api/logs', async (req, res) => {
+  try {
+    const logs = await Log.find().sort({ loginTime: -1 });
+    res.status(200).json(logs);
+  } catch (error) {
+    res.status(500).json({ message: 'Server error fetching activity logs.', error: error.message });
   }
 });
 
-/* ---------- college-scoped key-value storage ---------- */
-app.get('/api/storage/:key', requireAuth, (req, res) => {
-  const { key } = req.params;
-  const shared = req.query.shared === 'true';
-
-  const cleanCollegeCode = (req.user.collegeCode || '').trim().toUpperCase();
-  const namespace = shared ? `college:${cleanCollegeCode}` : `user:${req.user.id}`;
-
-  const value = (req.db.storage[namespace] && req.db.storage[namespace][key] !== undefined) ? req.db.storage[namespace][key] : null;
-  res.json({ key, value, shared });
-});
-
-app.post('/api/storage/:key', requireAuth, async (req, res) => {
-  try{
-    const { key } = req.params;
-    const { value, shared } = req.body || {};
-
-    const cleanCollegeCode = (req.user.collegeCode || '').trim().toUpperCase();
-    const namespace = shared ? `college:${cleanCollegeCode}` : `user:${req.user.id}`;
-
-    const db = req.db;
-    if(!db.storage[namespace]) db.storage[namespace] = {};
-    db.storage[namespace][key] = value;
-    await writeDB(db);
-    res.json({ key, ok:true, shared });
-  }catch(e){
-    console.error('Storage write failed:', e);
-    res.status(500).json({ error:'Server error — please try again.' });
-  }
-});
-
-app.delete('/api/storage/:key', requireAuth, async (req, res) => {
-  try{
-    const { key } = req.params;
-    const shared = req.query.shared === 'true';
-
-    const cleanCollegeCode = (req.user.collegeCode || '').trim().toUpperCase();
-    const namespace = shared ? `college:${cleanCollegeCode}` : `user:${req.user.id}`;
-
-    const db = req.db;
-    if(db.storage[namespace]) delete db.storage[namespace][key];
-    await writeDB(db);
-    res.json({ key, deleted:true, shared });
-  }catch(e){
-    console.error('Storage delete failed:', e);
-    res.status(500).json({ error:'Server error — please try again.' });
-  }
-});
-
-app.get('/api/health', (req, res) => res.json({ status:'ok', storageMode, time: Date.now() }));
-
-async function start(){
-  await initStorage();
-  await ensureOwner();
-  app.listen(PORT, () => {
-    console.log(`LabTrack server running at http://localhost:${PORT} (storage: ${storageMode})`);
+// -------------------------------------------------------------
+// DEPLOYMENT SERVING (FRONTEND BUILD)
+// -------------------------------------------------------------
+if (process.env.NODE_ENV === 'production') {
+  app.use(express.static(path.join(__dirname, '../frontend/build')));
+  
+  app.get('*', (req, res) => {
+    res.sendFile(path.join(__dirname, '../frontend/build', 'index.html'));
   });
 }
-start();
+
+app.listen(PORT, () => {
+  console.log(`[LabTrack Server] Listening smoothly on port ${PORT}`);
+});
