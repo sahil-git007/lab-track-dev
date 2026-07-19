@@ -2,26 +2,11 @@
  * LabTrack — backend server
  *
  * Real authentication (no third-party auth service needed) + a tiny
- * key-value storage API, both persisted to data/db.json.
+ * key-value storage API, both persisted to MongoDB Atlas or data/db.json.
  *
  * Multi-tenancy: every user registers with a collegeCode. All "shared"
  * data (equipment, checkouts, maintenance) is namespaced by the logged-in
  * user's collegeCode, so different colleges never see each other's records.
- *
- * Roles:
- *    student  — checkout/return, report issues, browse everything in their college
- *    incharge — additionally: add/remove equipment, resolve maintenance
- *    owner    — one global account (that's you, the person deploying this) that
- *               can view every user across every college and promote/demote/remove them
- *
- * Run:
- *    npm install
- *    npm start
- * Then open http://localhost:3000
- *
- * IMPORTANT: set OWNER_USERNAME and OWNER_PASSWORD as environment variables
- * before first run (see README) — otherwise an insecure default owner
- * account is created and a warning is printed to the console.
  */
 const express = require('express');
 const crypto = require('crypto');
@@ -37,19 +22,7 @@ const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '.')));
 
-/* ---------- storage layer ----------
- * IMPORTANT — this is the fix for "data disappears after a while":
- * Render's free web services use an EPHEMERAL disk. Every restart (the
- * service sleeping after inactivity, a redeploy, a crash) wipes anything
- * written to data/db.json at runtime, resetting the app back to empty —
- * that's why new accounts and new equipment vanished.
- *
- * If MONGODB_URI is set, everything is stored in MongoDB Atlas instead,
- * which lives independently of the server and survives every restart.
- * If MONGODB_URI is NOT set, this falls back to the local JSON file —
- * fine for local development, but you MUST set MONGODB_URI in production
- * (see README) or you will keep losing data.
- */
+/* ---------- storage layer ---------- */
 let storageMode = 'file';
 let mongoCollection = null;
 
@@ -111,7 +84,7 @@ async function writeDB(db){
   writeDBFile(db);
 }
 
-/* ---------- password hashing (Node's built-in crypto, no extra deps) ---------- */
+/* ---------- password hashing ---------- */
 function hashPassword(password){
   const salt = crypto.randomBytes(16).toString('hex');
   const hash = crypto.scryptSync(password, salt, 64).toString('hex');
@@ -144,7 +117,7 @@ async function ensureOwner(){
     fullName: 'System Owner',
     collegeName: 'LabTrack Administration',
     department: 'Administration',
-    collegeCode: 'GHRCEN', // Forced default matches perfectly
+    collegeCode: 'GHRCEN', 
     username,
     passwordHash: hashPassword(password),
     role: 'owner',
@@ -189,8 +162,11 @@ app.post('/api/auth/register', async (req, res) => {
 
     const db = await readDB();
     const uname = username.trim().toLowerCase();
-    if(db.users.some(u=>u.username.toLowerCase()===uname)){
-      return res.status(400).json({ error:'That username is already taken.' });
+    const targetCode = collegeCode.trim().toUpperCase();
+
+    // Check if the username is already taken within this specific college
+    if(db.users.some(u => u.username.toLowerCase() === uname && u.collegeCode === targetCode)){
+      return res.status(400).json({ error:'That username is already taken for this college.' });
     }
 
     const user = {
@@ -198,7 +174,7 @@ app.post('/api/auth/register', async (req, res) => {
       fullName: fullName.trim(),
       collegeName: collegeName.trim(),
       department: department.trim(),
-      collegeCode: collegeCode.trim().toUpperCase(), // Fixed syntax bug here
+      collegeCode: targetCode, 
       username: username.trim(),
       passwordHash: hashPassword(password),
       role: 'student',
@@ -222,12 +198,10 @@ app.post('/api/auth/login', async (req, res) => {
 
     const db = await readDB();
     const uname = username.trim().toLowerCase();
-    const user = db.users.find(u => u.username.toLowerCase() === uname);
-
-    // Clean, unified check for the mandatory code restriction
-    if (collegeCode.trim().toUpperCase() !== 'GHRCEN') {
-      return res.status(400).json({ error: "Invalid college code..." });
-    }
+    const targetCode = collegeCode.trim().toUpperCase();
+    
+    // Find user matching both username AND the typed collegeCode dynamically
+    const user = db.users.find(u => u.username.toLowerCase() === uname && u.collegeCode === targetCode);
 
     if(!user || !verifyPassword(password, user.passwordHash)){
       return res.status(401).json({ error:'Invalid college code, username, or password.' });
@@ -257,7 +231,7 @@ app.get('/api/auth/me', requireAuth, (req, res) => {
   res.json({ user: publicUser(req.user) });
 });
 
-/* ---------- owner: manage all users across all colleges ---------- */
+/* ---------- owner routes ---------- */
 app.get('/api/owner/users', requireAuth, requireOwner, (req, res) => {
   res.json({ users: req.db.users.map(publicUser) });
 });
@@ -300,7 +274,6 @@ app.get('/api/storage/:key', requireAuth, (req, res) => {
   const { key } = req.params;
   const shared = req.query.shared === 'true';
 
-  // Clean string sanitation ensures owners and students access the exact same dataset
   const cleanCollegeCode = (req.user.collegeCode || '').trim().toUpperCase();
   const namespace = shared ? `college:${cleanCollegeCode}` : `user:${req.user.id}`;
 
