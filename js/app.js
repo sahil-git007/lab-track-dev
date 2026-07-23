@@ -92,7 +92,8 @@ const KEYS = {
 
 function buildNav(){
   const nav = [
-    {group:'Overview', items:[{id:'dashboard', label:'Dashboard', icon:'&#9635;'}]},
+    {group:'Home', items:[{id:'dashboard', label:'Home Screen', icon:'&#8962;'}]},
+    {group:'Overview', items:[{id:'analytics', label:'Dashboard', icon:'&#9635;'}]},
     {group:'Inventory', items:[
       {id:'inventory', label:'Equipment', icon:'&#9881;'},
       {id:'scan', label:'Scan QR', icon:'&#128247;'},
@@ -297,13 +298,13 @@ async function switchTab(tab){
   renderSidebar();
   const main = document.getElementById('main');
   main.innerHTML = `<div class="loading-note">Loading ${tab}…</div>`;
-  const renderers = { dashboard:renderDashboard, inventory:renderInventory, checkout:renderCheckout, usage:renderUsage, maintenance:renderMaintenance, scan:renderScan, users:renderUsers };
+  const renderers = { dashboard:renderDashboard, analytics:renderAnalytics, inventory:renderInventory, checkout:renderCheckout, usage:renderUsage, maintenance:renderMaintenance, scan:renderScan, users:renderUsers };
   await renderers[tab]();
 }
 
 async function nextTag(){ tagCounter += 1; await storageSet(KEYS.tagCounter, String(tagCounter), true); return 'LAB-EQ-'+String(tagCounter).padStart(4,'0'); }
 
-/* ============ CLEAN DASHBOARD WITH NOTICES & UPDATES ============ */
+/* ============ CLEAN DASHBOARD (HOME SCREEN) WITH NOTICES ============ */
 async function renderDashboard(){
   const main = document.getElementById('main');
   main.innerHTML = `
@@ -321,7 +322,7 @@ async function renderDashboard(){
           <div style="display: flex; gap: 10px; align-items: flex-start; border-bottom: 1px dashed var(--grid); padding-bottom: 10px;">
             <span class="badge badge-ok" style="margin-top: 2px;">NEW</span>
             <div>
-              <strong>UI Modernization & Clean Home Screen:</strong> Redesigned the main interface with a minimalist layout featuring a collapsible hamburger menu (☰).
+              <strong>UI Modernization & Clean Home Screen:</strong> Redesigned the main interface with a minimalist layout featuring a dedicated Home Screen button and collapsible hamburger menu (☰).
             </div>
           </div>
           <div style="display: flex; gap: 10px; align-items: flex-start; border-bottom: 1px dashed var(--grid); padding-bottom: 10px;">
@@ -365,6 +366,57 @@ async function renderDashboard(){
       sb.classList.remove('open');
     }
   };
+}
+
+/* ============ ANALYTICS DASHBOARD ============ */
+async function renderAnalytics(){
+  const [equipment, checkouts, maintenance] = await Promise.all([
+    loadList(KEYS.equipment, true), loadList(KEYS.checkouts, true), loadList(KEYS.maintenance, true)
+  ]);
+  const now = Date.now();
+  const totalUnits = equipment.reduce((s,e)=>s+e.totalQty,0);
+  const availableUnits = equipment.reduce((s,e)=>s+e.availableQty,0);
+  const activeCheckouts = checkouts.filter(c=>c.status==='Active');
+  const overdue = activeCheckouts.filter(c=> c.dueTime && c.dueTime < now);
+  const underMaint = equipment.filter(e=>e.condition!=='Good').length;
+  const openMaint = maintenance.filter(m=>m.status==='Open').length;
+
+  const usageCount = {};
+  checkouts.forEach(c=>{ usageCount[c.equipmentName] = (usageCount[c.equipmentName]||0)+1; });
+  const topUsed = Object.entries(usageCount).sort((a,b)=>b[1]-a[1]).slice(0,5);
+  const maxUse = topUsed.length ? topUsed[0][1] : 1;
+
+  const main = document.getElementById('main');
+  main.innerHTML = `
+    <div class="module-head">
+      <h2>Dashboard Analytics</h2>
+      <p>Live status of every tracked item in the lab.</p>
+    </div>
+    <div class="grid grid-5" style="margin-bottom:20px;">
+      <div class="card stat-card"><div class="num">${equipment.length}</div><div class="lbl">Equipment types</div></div>
+      <div class="card stat-card ok"><div class="num">${availableUnits}/${totalUnits}</div><div class="lbl">Units available</div></div>
+      <div class="card stat-card"><div class="num">${activeCheckouts.length}</div><div class="lbl">Checked out now</div></div>
+      <div class="card stat-card ${overdue.length? 'alert':''}"><div class="num">${overdue.length}</div><div class="lbl">Overdue returns</div></div>
+      <div class="card stat-card ${underMaint? 'warn':''}"><div class="num">${underMaint}</div><div class="lbl">Under maintenance</div></div>
+    </div>
+    <div class="grid grid-2" style="align-items:start;">
+      <div class="panel">
+        <h3>Most used equipment</h3>
+        ${topUsed.length ? topUsed.map(([name,count])=>`
+          <div class="bar-row">
+            <div class="bar-label">${esc(name)}</div>
+            <div class="bar-track"><div class="bar-fill" style="width:${(count/maxUse*100).toFixed(0)}%"></div></div>
+            <div class="bar-val">${count}×</div>
+          </div>`).join('') : `<div class="empty">No checkout activity logged yet.</div>`}
+      </div>
+      <div class="panel">
+        <h3>Needs attention</h3>
+        ${overdue.length ? `<div style="margin-bottom:10px;"><span class="badge badge-rust">${overdue.length} overdue</span> — see Checkout / Return</div>` : ''}
+        ${openMaint ? `<div><span class="badge badge-warn">${openMaint} open maintenance report${openMaint===1?'':'s'}</span> — see Maintenance</div>` : ''}
+        ${(!overdue.length && !openMaint) ? `<div class="empty">Nothing needs attention right now.</div>` : ''}
+      </div>
+    </div>
+  `;
 }
 
 /* ============ EQUIPMENT INVENTORY ============ */
