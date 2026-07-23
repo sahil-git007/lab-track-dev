@@ -46,6 +46,24 @@ body {
   gap: 12px;
 }
 
+.hamburger-btn {
+  background: none;
+  border: none;
+  font-size: 1.5rem;
+  cursor: pointer;
+  color: var(--ink);
+  padding: 4px 8px;
+  border-radius: 4px;
+  margin-right: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.hamburger-btn:hover {
+  background: var(--bg);
+}
+
 .brand-mark {
   background: var(--ink);
   color: var(--paper);
@@ -71,13 +89,26 @@ body {
 .shell {
   display: flex;
   flex: 1;
+  position: relative;
 }
 
+/* Collapsible Sidebar Overlay/Drawer */
 #sidebar {
-  width: 240px;
+  position: absolute;
+  top: 0;
+  left: -260px;
+  width: 260px;
+  height: 100%;
   background: var(--paper);
   border-right: 1px solid var(--grid);
   padding: 16px 0;
+  z-index: 100;
+  transition: left 0.3s ease-in-out;
+  box-shadow: 4px 0 15px rgba(0,0,0,0.05);
+}
+
+#sidebar.open {
+  left: 0;
 }
 
 .nav-label-group {
@@ -114,6 +145,7 @@ body {
   flex: 1;
   padding: 30px;
   overflow-y: auto;
+  width: 100%;
 }
 
 /* ============ Panels & Modules ============ */
@@ -400,29 +432,4 @@ textarea {
 @keyframes fadeIn {
   from { opacity: 0; transform: translateY(6px); }
   to { opacity: 1; transform: translateY(0); }
-}
-
-/* ============ Responsive Adjustments ============ */
-@media(max-width: 768px) {
-  .shell {
-    flex-direction: column;
-  }
-  #sidebar {
-    width: 100%;
-    display: flex;
-    overflow-x: auto;
-    padding: 10px;
-  }
-  .nav-label-group {
-    display: none;
-  }
-  .nav-item {
-    white-space: nowrap;
-    padding: 6px 12px;
-    border-radius: 4px;
-    border-right: none !important;
-  }
-  .nav-item.active {
-    background: var(--paper-subtle);
-  }
 }
