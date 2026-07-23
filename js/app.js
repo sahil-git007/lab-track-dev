@@ -893,7 +893,12 @@ async function lookupAndShow(tagOrId){
   const [equipment, checkouts, maintenance] = await Promise.all([
     loadList(KEYS.equipment, true), loadList(KEYS.checkouts, true), loadList(KEYS.maintenance, true)
   ]);
-  const needle = tagOrId.trim().toLowerCase();
+  
+  let raw = tagOrId.trim();
+  // Automatically extract LAB-EQ-xxxx from URLs or plain text strings scanned from QR codes
+  const match = raw.match(/LAB-EQ-\d+/i);
+  const needle = match ? match[0].toLowerCase() : raw.toLowerCase();
+
   const eq = equipment.find(e => e.tag.toLowerCase()===needle || e.id.toLowerCase()===needle);
   const resultEl = document.getElementById('scanResult');
   if(!resultEl) return; // user navigated away mid-lookup
@@ -1003,10 +1008,52 @@ async function renderUsers(){
     if(!users.length){ body.innerHTML = `<div class="empty">No users registered yet.</div>`; return; }
     body.innerHTML = `
       <div class="user-row head">
-        // ...truncated for code block...
+        <div>Name</div><div>College</div><div>Dept</div><div>Code</div><div>Role</div><div></div>
       </div>
+      ${users.map(u=>`
+        <div class="user-row">
+          <div>${esc(u.fullName)}<br/><span class="tag-id">${esc(u.username)}</span></div>
+          <div>${esc(u.collegeName)}</div>
+          <div>${esc(u.department)}</div>
+          <div class="mono">${esc(u.collegeCode)}</div>
+          <div>
+            ${u.role==='owner'
+              ? `<span class="badge badge-rust">Owner</span>`
+              : `<select data-role="${u.id}">
+                   <option value="student" ${u.role==='student'?'selected':''}>Student</option>
+                   <option value="incharge" ${u.role==='incharge'?'selected':''}>Lab In-Charge</option>
+                 </select>`}
+          </div>
+          <div>${u.role==='owner' ? '' : `<button class="btn btn-sm" style="color:var(--rust);" data-delete="${u.id}">Remove</button>`}</div>
+        </div>
+      `).join('')}
     `;
+    body.querySelectorAll('[data-role]').forEach(sel=> sel.onchange = async ()=>{
+      const res = await apiFetch(`/api/owner/users/${sel.dataset.role}`, {
+        method:'PATCH', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ role: sel.value })
+      });
+      if(res.ok){ showToast('Role updated.', 'ok'); }
+      else{ showToast('Could not update role.', 'error'); }
+    });
+    body.querySelectorAll('[data-delete]').forEach(b=> b.onclick = async ()=>{
+      if(b.dataset.confirming!=='1'){
+        b.dataset.confirming = '1';
+        b.textContent = 'Confirm remove?';
+        setTimeout(()=>{ if(b.dataset.confirming==='1'){ b.dataset.confirming='0'; b.textContent='Remove'; } }, 4000);
+        return;
+      }
+      const res = await apiFetch(`/api/owner/users/${b.dataset.delete}`, { method:'DELETE' });
+      if(res.ok){
+        showToast('User removed.', 'ok');
+        users = users.filter(u=>u.id!==b.dataset.delete);
+        draw();
+      } else {
+        showToast('Could not remove user.', 'error');
+      }
+    });
   };
   draw();
 }
+
 boot();
