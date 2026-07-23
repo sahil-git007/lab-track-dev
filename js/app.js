@@ -303,14 +303,41 @@ async function switchTab(tab){
 
 async function nextTag(){ tagCounter += 1; await storageSet(KEYS.tagCounter, String(tagCounter), true); return 'LAB-EQ-'+String(tagCounter).padStart(4,'0'); }
 
-/* ============ CLEAN DASHBOARD WITH THREE-LINE MENU HOOK ============ */
+/* ============ CLEAN DASHBOARD WITH NOTICES & UPDATES ============ */
 async function renderDashboard(){
   const main = document.getElementById('main');
   main.innerHTML = `
     <div class="clean-home-wrapper">
       <div class="clean-home-title">SAHIL SAHOO</div>
       <div class="clean-home-subtitle">CSE DEPARTMENT</div>
-      <div class="clean-home-hint">Click the top-left menu (☰) to access all tools and inventory.</div>
+      <div class="clean-home-hint" style="margin-bottom: 30px;">Click the top-left menu (☰) to access all tools and inventory.</div>
+
+      <!-- Notices and Website Improvements Panel -->
+      <div class="panel" style="width: 100%; max-width: 700px; text-align: left; margin: 0 auto; background: var(--paper);">
+        <h3 style="display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--grid); padding-bottom: 10px; margin-bottom: 14px;">
+          <span>📢</span> Lab Notices & Website Updates
+        </h3>
+        <div style="display: flex; flex-direction: column; gap: 12px; font-size: 0.9rem;">
+          <div style="display: flex; gap: 10px; align-items: flex-start; border-bottom: 1px dashed var(--grid); padding-bottom: 10px;">
+            <span class="badge badge-ok" style="margin-top: 2px;">NEW</span>
+            <div>
+              <strong>UI Modernization & Clean Home Screen:</strong> Redesigned the main interface with a minimalist layout featuring a collapsible hamburger menu (☰).
+            </div>
+          </div>
+          <div style="display: flex; gap: 10px; align-items: flex-start; border-bottom: 1px dashed var(--grid); padding-bottom: 10px;">
+            <span class="badge badge-neutral" style="margin-top: 2px;">SYSTEM</span>
+            <div>
+              <strong>Robust QR Code Engine:</strong> Upgraded client-side QR generation and scanning with deep-link payload routing and inversion parsing support.
+            </div>
+          </div>
+          <div style="display: flex; gap: 10px; align-items: flex-start;">
+            <span class="badge badge-warn" style="margin-top: 2px;">NOTICE</span>
+            <div>
+              <strong>Lab Safety & Return Policy:</strong> All equipment borrowed must be returned before the scheduled due time. Report any maintenance issues immediately via the Maintenance tab.
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   `;
 
