@@ -285,7 +285,10 @@ function renderSidebar(){
     <div class="nav-label-group">${g.group}</div>
     ${g.items.map(it=>`<div class="nav-item ${currentTab===it.id?'active':''}" data-tab="${it.id}"><span class="ic">${it.icon}</span><span>${it.label}</span></div>`).join('')}
   `).join('');
-  sb.querySelectorAll('.nav-item').forEach(el=> el.onclick = ()=>switchTab(el.dataset.tab));
+  sb.querySelectorAll('.nav-item').forEach(el=> el.onclick = ()=>{
+    switchTab(el.dataset.tab);
+    sb.classList.remove('open');
+  });
 }
 
 async function switchTab(tab){
@@ -300,7 +303,7 @@ async function switchTab(tab){
 
 async function nextTag(){ tagCounter += 1; await storageSet(KEYS.tagCounter, String(tagCounter), true); return 'LAB-EQ-'+String(tagCounter).padStart(4,'0'); }
 
-/* ============ CLEAN DASHBOARD (HOME SCREEN) ============ */
+/* ============ CLEAN DASHBOARD WITH THREE-LINE MENU HOOK ============ */
 async function renderDashboard(){
   const main = document.getElementById('main');
   main.innerHTML = `
@@ -310,6 +313,31 @@ async function renderDashboard(){
       <div class="clean-home-hint">Click the top-left menu (☰) to access all tools and inventory.</div>
     </div>
   `;
+
+  let hamburger = document.getElementById('hamburgerToggle');
+  const brand = document.querySelector('.topbar .brand');
+  if(brand && !hamburger){
+    hamburger = document.createElement('button');
+    hamburger.id = 'hamburgerToggle';
+    hamburger.className = 'hamburger-btn';
+    hamburger.innerHTML = '☰';
+    brand.insertBefore(hamburger, brand.firstChild);
+  }
+  if(hamburger){
+    hamburger.onclick = (e)=>{
+      e.stopPropagation();
+      const sb = document.getElementById('sidebar');
+      if(sb) sb.classList.toggle('open');
+    };
+  }
+
+  document.onclick = (e)=>{
+    const sb = document.getElementById('sidebar');
+    const hamburgerBtn = document.getElementById('hamburgerToggle');
+    if(sb && sb.classList.contains('open') && !sb.contains(e.target) && e.target !== hamburgerBtn){
+      sb.classList.remove('open');
+    }
+  };
 }
 
 /* ============ EQUIPMENT INVENTORY ============ */
