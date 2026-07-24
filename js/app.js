@@ -114,8 +114,12 @@ const KEYS = {
   checkouts:'lab:checkouts',
   maintenance:'lab:maintenance',
   tagCounter:'lab:tagCounter',
-  notices:'lab:notices'
+  notices:'lab:notices',
+  clientVersion:'lab:client_version'
 };
+
+// Current client build version for auto update tracking
+const CURRENT_BUILD_VERSION = 'v2.6.4-live';
 
 function buildNav(){
   const nav = [
@@ -138,7 +142,7 @@ function buildNav(){
   return nav;
 }
 
-/* ============ Boot ============ */
+/* ============ Boot & Auto Version Check ============ */
 async function boot(){
   if(!authToken){ renderAuthScreen('login'); return; }
   try{
@@ -154,6 +158,10 @@ async function boot(){
   }
   document.getElementById('authOverlay').style.display = 'none';
   tagCounter = parseInt(await storageGet(KEYS.tagCounter, true)) || 1;
+  
+  // Automated Website Change Detector & Notice Publisher
+  await checkAndPublishAutoNotice();
+
   renderProfileBox();
   renderSidebar();
 
@@ -169,6 +177,29 @@ async function boot(){
   }
 
   await switchTab('dashboard');
+}
+
+async function checkAndPublishAutoNotice(){
+  try{
+    let lastVersion = await storageGet(KEYS.clientVersion, true);
+    if(lastVersion !== CURRENT_BUILD_VERSION){
+      let notices = await loadList(KEYS.notices, true);
+      const autoUpdateNotice = {
+        id: uid(),
+        title: `Automatic System Update (${CURRENT_BUILD_VERSION})`,
+        desc: 'New website changes, stability enhancements, and security rules have been successfully deployed live.',
+        type: 'SYSTEM',
+        time: Date.now()
+      };
+      notices.unshift(autoUpdateNotice);
+      await Promise.all([
+        saveList(KEYS.notices, notices, true),
+        storageSet(KEYS.clientVersion, CURRENT_BUILD_VERSION, true)
+      ]);
+    }
+  }catch(err){
+    console.error('Auto notice check failed', err);
+  }
 }
 
 function doLogout(redraw=true){
@@ -374,7 +405,6 @@ async function renderNotices(){
   const main = document.getElementById('main');
   let notices = await loadList(KEYS.notices, true);
   
-  // Default announcements if none posted yet
   if(!notices.length){
     notices = [
       { id: '1', title: 'UI Modernization & Clean Home Screen', desc: 'Redesigned the main interface with a minimalist layout featuring a dedicated Home Screen button and collapsible hamburger menu (☰).', type: 'NEW', time: Date.now() },
@@ -388,7 +418,7 @@ async function renderNotices(){
   main.innerHTML = `
     <div class="module-head">
       <h2>Notices & Website Updates</h2>
-      <p>Live announcements, website updates, and laboratory guidelines.</p>
+      <p>Live announcements, automated system updates, and laboratory guidelines.</p>
     </div>
     
     ${isOwner ? `
@@ -623,7 +653,7 @@ async function renderInventory(){
           <div style="margin-top:8px;">Available: <strong class="mono">${e.availableQty} / ${e.totalQty}</strong>${fmtPrice(e.price) ? ` · Price: <strong class="mono">${fmtPrice(e.price)}</strong>` : ''}</div>
           ${e.description ? `<div style="margin-top:6px;color:var(--ink-soft);">${esc(e.description.length>140 ? e.description.slice(0,140)+'…' : e.description)}</div>` : ''}
           ${e.videoUrl ? `<span class="badge badge-ok" style="margin-top:6px;display:inline-block;">▶ Has video</span>` : ''}
-          ${!e.price && !e.description && !e.usageNotes && !e.videoUrl && isIncharge ? `<div style="margin-top:6px;font-size:12px;color:var(--amber);">&#128227; No price/description/usage/video info yet.</div>` : ''}
+          ${!e.price && !e.description && !e.usageNotes && !e.videoUrl && isIncharge ? `<div style="margin-top:6px;font-size:12px;color:var(--amber);">No price/description/usage/video info yet.</div>` : ''}
           ${isIncharge ? (editing ? `
             <div style="margin-top:10px;border-top:1px solid var(--grid);padding-top:10px;">
               <div class="form-group" style="margin-bottom:8px;"><label>Price (₹ per unit)</label><input id="editPrice-${e.id}" type="number" min="0" step="0.01" value="${e.price ?? ''}" /></div>
