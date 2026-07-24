@@ -64,20 +64,28 @@ function videoEmbedHtml(url){
 }
 function hoursBetween(a,b){ return Math.max(0, (b-a)/3600000); }
 
-/* ============ Content Moderation Filter API (Blocks Abusive / Nonsense Text) ============ */
+/* ============ Upgraded Content Moderation Filter ============ */
 function containsProfanityOrNonsense(text){
   if(!text) return false;
-  const lower = text.toLowerCase();
-  // List of forbidden abusive slang, explicit terms, or inappropriate references
+  const cleanText = text.trim();
+  const lower = cleanText.toLowerCase();
+
+  // 1. Check for profanity, explicit slang, or vulgar terms
   const badWords = [
     'sperm', 'jhonny', 'johnny', 'sins', 'sex', 'porn', 'fuck', 'shit', 'bitch', 
-    'ass', 'damn', 'dick', 'cock', 'pussy', 'bastard', 'chor market', 'bloody'
+    'ass', 'damn', 'dick', 'cock', 'pussy', 'bastard', 'chor market', 'bloody', 'randi', 'lund', 'choot'
   ];
   for(let word of badWords){
     if(lower.includes(word)) return true;
   }
-  // Check for excessive random keyboard smashing / gibberish (e.g. "asdfghjkl")
-  if(/^[bcdfghjklmnpqrstvwxyz]{6,}$/i.test(text.trim())) return true;
+
+  // 2. Check for character flooding / repetition spam (e.g. "aaaaaaaa", "xxxxxxx", "zzzzzz")
+  if(/(.)\1{4,}/.test(lower)) return true;
+
+  // 3. Check for pure keyboard smashing / gibberish (e.g. random consonant-only strings or fewer than 4 valid characters)
+  if(cleanText.length < 5) return true;
+  if(/^[bcdfghjklmnpqrstvwxyz]{5,}$/i.test(cleanText)) return true;
+
   return false;
 }
 
@@ -674,11 +682,12 @@ async function renderCheckout(){
     if(!requireProfile()) return;
     const eqId = document.getElementById('coEquip').value;
     if(!eqId) return;
-    const purpose = document.getElementById('coPurpose').value.trim();
+    const purposeInput = document.getElementById('coPurpose');
+    const purpose = purposeInput.value.trim();
     
-    // Content Moderation check for purpose/checkout description
     if(containsProfanityOrNonsense(purpose)){
       showToast('Inappropriate or meaningless text detected. Please enter a professional purpose.', 'error');
+      purposeInput.focus();
       return;
     }
 
@@ -801,19 +810,19 @@ async function renderMaintenance(){
   `;
   document.getElementById('mtSubmit').onclick = async ()=>{
     if(!requireProfile()) return;
-    const eqId = document.getElementById('mtEquip');
-    if(!eqId || !eqId.value) return;
+    const eqIdEl = document.getElementById('mtEquip');
+    if(!eqIdEl || !eqIdEl.value) return;
     const issueInput = document.getElementById('mtIssue');
     const issue = issueInput.value.trim();
 
-    // Content Moderation check
+    // Content Moderation check (catches flooding like 'aaaaaaaa', gibberish, and profanity)
     if(containsProfanityOrNonsense(issue)){
       showToast('Inappropriate or meaningless text detected. Please provide a genuine and professional description.', 'error');
       issueInput.focus();
       return;
     }
 
-    const eq = equipment.find(x=>x.id===eqId.value);
+    const eq = equipment.find(x=>x.id===eqIdEl.value);
     const severity = document.getElementById('mtSeverity').value;
     eq.condition = severity;
     if(eq.availableQty>0) eq.availableQty -= 1;
