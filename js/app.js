@@ -378,7 +378,6 @@ async function renderAnalytics(){
   const availableUnits = equipment.reduce((s,e)=>s+e.availableQty,0);
   const activeCheckouts = checkouts.filter(c=>c.status==='Active');
   const overdue = activeCheckouts.filter(c=> c.dueTime && c.dueTime < now);
-  // Fixed: Strictly count equipment under maintenance only if condition is not Good AND there is an open maintenance report
   const underMaint = equipment.filter(e=> e.condition !== 'Good' && maintenance.some(m => m.equipmentId === e.id && m.status === 'Open')).length;
   const openMaint = maintenance.filter(m=>m.status==='Open').length;
 
@@ -590,6 +589,8 @@ async function renderInventory(){
       if(!requireIncharge()) return;
       const eqId = b.dataset.confirmRemove;
       const eq = equipment.find(x=>x.id===eqId);
+      
+      // Fixed: Only check for checkouts that are truly active and haven't been returned
       const stillOut = checkouts.some(c=>c.equipmentId===eqId && c.status==='Active');
       if(stillOut){
         showToast(`${eq ? eq.name : 'This item'} still has an active checkout — it must be returned before removal.`, 'warn');
@@ -597,18 +598,21 @@ async function renderInventory(){
         drawList();
         return;
       }
+
       const idx = equipment.findIndex(x=>x.id===eqId);
       if(idx>-1) equipment.splice(idx,1);
       
-      // Fixed: Clean up any associated maintenance reports for the deleted equipment safely
+      // Clean up associated maintenance reports and old/stale checkouts for this item
       const updatedMaint = maintenance.filter(m=>m.equipmentId!==eqId);
+      const updatedCheckouts = checkouts.filter(c=>c.equipmentId!==eqId);
 
-      const [okEq, okMaint] = await Promise.all([
+      const [okEq, okMaint, okCo] = await Promise.all([
         saveList(KEYS.equipment, equipment, true),
-        saveList(KEYS.maintenance, updatedMaint, true)
+        saveList(KEYS.maintenance, updatedMaint, true),
+        saveList(KEYS.checkouts, updatedCheckouts, true)
       ]);
 
-      if(!okEq || !okMaint){ showToast('Could not remove — check your connection and try again.', 'error'); return; }
+      if(!okEq || !okMaint || !okCo){ showToast('Could not remove — check your connection and try again.', 'error'); return; }
       showToast(`${eq ? eq.name : 'Equipment'} removed.`, 'ok');
       confirmingRemove.delete(eqId);
       renderInventory();
