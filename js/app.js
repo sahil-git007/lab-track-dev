@@ -64,6 +64,23 @@ function videoEmbedHtml(url){
 }
 function hoursBetween(a,b){ return Math.max(0, (b-a)/3600000); }
 
+/* ============ Content Moderation Filter API (Blocks Abusive / Nonsense Text) ============ */
+function containsProfanityOrNonsense(text){
+  if(!text) return false;
+  const lower = text.toLowerCase();
+  // List of forbidden abusive slang, explicit terms, or inappropriate references
+  const badWords = [
+    'sperm', 'jhonny', 'johnny', 'sins', 'sex', 'porn', 'fuck', 'shit', 'bitch', 
+    'ass', 'damn', 'dick', 'cock', 'pussy', 'bastard', 'chor market', 'bloody'
+  ];
+  for(let word of badWords){
+    if(lower.includes(word)) return true;
+  }
+  // Check for excessive random keyboard smashing / gibberish (e.g. "asdfghjkl")
+  if(/^[bcdfghjklmnpqrstvwxyz]{6,}$/i.test(text.trim())) return true;
+  return false;
+}
+
 /* ============ QR Code Generator with Deep-Link URL Payload ============ */
 function renderQR(elId, text, size){
   const el = document.getElementById(elId);
@@ -590,7 +607,6 @@ async function renderInventory(){
       const eqId = b.dataset.confirmRemove;
       const eq = equipment.find(x=>x.id===eqId);
       
-      // If owner, allow bypassing active checkout block or auto-resolve
       const stillOut = checkouts.some(c=>c.equipmentId===eqId && c.status==='Active');
       if(stillOut && profileRole !== 'owner'){
         showToast(`${eq ? eq.name : 'This item'} still has an active checkout — it must be returned before removal.`, 'warn');
@@ -658,6 +674,14 @@ async function renderCheckout(){
     if(!requireProfile()) return;
     const eqId = document.getElementById('coEquip').value;
     if(!eqId) return;
+    const purpose = document.getElementById('coPurpose').value.trim();
+    
+    // Content Moderation check for purpose/checkout description
+    if(containsProfanityOrNonsense(purpose)){
+      showToast('Inappropriate or meaningless text detected. Please enter a professional purpose.', 'error');
+      return;
+    }
+
     const eq = equipment.find(x=>x.id===eqId);
     const qty = Math.min(parseInt(document.getElementById('coQty').value)||1, eq.availableQty);
     const dueVal = document.getElementById('coDue').value;
@@ -665,7 +689,7 @@ async function renderCheckout(){
     await saveList(KEYS.equipment, equipment, true);
     checkouts.unshift({
       id: uid(), equipmentId: eq.id, equipmentName: eq.name, equipmentTag: eq.tag, qty,
-      borrower: profileName, purpose: document.getElementById('coPurpose').value.trim(),
+      borrower: profileName, purpose: purpose,
       checkoutTime: Date.now(), dueTime: dueVal ? new Date(dueVal).getTime() : null,
       returnTime: null, status:'Active'
     });
@@ -777,10 +801,19 @@ async function renderMaintenance(){
   `;
   document.getElementById('mtSubmit').onclick = async ()=>{
     if(!requireProfile()) return;
-    const eqId = document.getElementById('mtEquip').value;
-    const issue = document.getElementById('mtIssue').value.trim();
-    if(!eqId || !issue) return;
-    const eq = equipment.find(x=>x.id===eqId);
+    const eqId = document.getElementById('mtEquip');
+    if(!eqId || !eqId.value) return;
+    const issueInput = document.getElementById('mtIssue');
+    const issue = issueInput.value.trim();
+
+    // Content Moderation check
+    if(containsProfanityOrNonsense(issue)){
+      showToast('Inappropriate or meaningless text detected. Please provide a genuine and professional description.', 'error');
+      issueInput.focus();
+      return;
+    }
+
+    const eq = equipment.find(x=>x.id===eqId.value);
     const severity = document.getElementById('mtSeverity').value;
     eq.condition = severity;
     if(eq.availableQty>0) eq.availableQty -= 1;
