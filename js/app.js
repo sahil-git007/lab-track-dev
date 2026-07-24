@@ -118,7 +118,6 @@ const KEYS = {
   clientVersion:'lab:client_version'
 };
 
-// Current client build version for auto update tracking
 const CURRENT_BUILD_VERSION = 'v2.6.4-live';
 
 function buildNav(){
@@ -159,7 +158,6 @@ async function boot(){
   document.getElementById('authOverlay').style.display = 'none';
   tagCounter = parseInt(await storageGet(KEYS.tagCounter, true)) || 1;
   
-  // Automated Website Change Detector & Notice Publisher
   await checkAndPublishAutoNotice();
 
   renderProfileBox();
