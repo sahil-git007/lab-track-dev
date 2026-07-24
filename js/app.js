@@ -590,7 +590,6 @@ async function renderInventory(){
       const eqId = b.dataset.confirmRemove;
       const eq = equipment.find(x=>x.id===eqId);
       
-      // Fixed: Only check for checkouts that are truly active and haven't been returned
       const stillOut = checkouts.some(c=>c.equipmentId===eqId && c.status==='Active');
       if(stillOut){
         showToast(`${eq ? eq.name : 'This item'} still has an active checkout — it must be returned before removal.`, 'warn');
@@ -602,7 +601,6 @@ async function renderInventory(){
       const idx = equipment.findIndex(x=>x.id===eqId);
       if(idx>-1) equipment.splice(idx,1);
       
-      // Clean up associated maintenance reports and old/stale checkouts for this item
       const updatedMaint = maintenance.filter(m=>m.equipmentId!==eqId);
       const updatedCheckouts = checkouts.filter(c=>c.equipmentId!==eqId);
 
@@ -1075,7 +1073,7 @@ async function lookupAndShow(tagOrId){
   resultEl.querySelectorAll('[data-go]').forEach(b=> b.onclick = ()=> switchTab(b.dataset.go));
 }
 
-/* ============ OWNER: MANAGE USERS ============ */
+/* ============ OWNER: MANAGE USERS & HISTORY RESET ============ */
 async function renderUsers(){
   const main = document.getElementById('main');
   if(profileRole!=='owner'){
@@ -1090,7 +1088,30 @@ async function renderUsers(){
     <div class="panel">
       <div id="usersBody"><div class="loading-note">Loading users…</div></div>
     </div>
+
+    <!-- Owner Clear History Panel -->
+    <div class="panel" style="margin-top: 24px; border-color: var(--rust);">
+      <h3 style="color: var(--rust);">⚠️ Clear All Lab History Records</h3>
+      <p style="font-size: 0.9rem; color: var(--ink-soft); margin-bottom: 14px;">
+        Wipe clean all historical checkouts, returns, and maintenance report records across the college. Equipment inventory will not be deleted.
+      </p>
+      <button class="btn" id="clearHistoryBtn" style="border-color: var(--rust); color: var(--rust);">Clear all history records</button>
+    </div>
   `;
+
+  document.getElementById('clearHistoryBtn').onclick = async ()=>{
+    if(!confirm('Are you sure you want to clear all checkout and maintenance history? This cannot be undone.')) return;
+    try{
+      await Promise.all([
+        saveList(KEYS.checkouts, [], true),
+        saveList(KEYS.maintenance, [], true)
+      ]);
+      showToast('All lab history records cleared successfully.', 'ok');
+    }catch(e){
+      showToast('Could not clear history.', 'error');
+    }
+  };
+
   let users = [];
   try{
     const res = await apiFetch('/api/owner/users');
