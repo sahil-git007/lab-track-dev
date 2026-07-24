@@ -590,8 +590,9 @@ async function renderInventory(){
       const eqId = b.dataset.confirmRemove;
       const eq = equipment.find(x=>x.id===eqId);
       
+      // If owner, allow bypassing active checkout block or auto-resolve
       const stillOut = checkouts.some(c=>c.equipmentId===eqId && c.status==='Active');
-      if(stillOut){
+      if(stillOut && profileRole !== 'owner'){
         showToast(`${eq ? eq.name : 'This item'} still has an active checkout — it must be returned before removal.`, 'warn');
         confirmingRemove.delete(eqId);
         drawList();
@@ -679,7 +680,7 @@ async function renderCheckout(){
     const now = Date.now();
     list.innerHTML = filtered.map(c=>{
       const isOverdue = c.status==='Active' && c.dueTime && c.dueTime < now;
-      const canReturn = c.status==='Active' && (c.borrower===profileName || profileRole==='incharge');
+      const canReturn = c.status==='Active' && (c.borrower===profileName || profileRole==='incharge' || profileRole==='owner');
       return `
       <div class="asset-tag">
         <span class="tick-tr"></span><span class="tick-br"></span>
@@ -695,7 +696,7 @@ async function renderCheckout(){
           Borrower: <strong>${esc(c.borrower)}</strong> · Out: ${fmtTime(c.checkoutTime)}
           ${c.dueTime? ' · Due: '+fmtTime(c.dueTime):''}
           ${c.returnTime? ' · Returned: '+fmtTime(c.returnTime):''}
-          ${canReturn? `<div style="margin-top:8px;"><button class="btn btn-sm" data-return="${c.id}">Mark returned</button></div>`:''}
+          ${canReturn? `<div style="margin-top:8px;"><button class="btn btn-sm" data-return="${c.id}">${profileRole==='owner' && c.status==='Active' ? 'Force Return (Owner)' : 'Mark returned'}</button></div>`:''}
         </div>
       </div>`;
     }).join('');
@@ -804,7 +805,7 @@ async function renderMaintenance(){
           ${esc(m.issue)}<br/>
           <span style="color:var(--ink-soft);">Reported by ${esc(m.reportedBy)} · ${fmtTime(m.timestamp)}</span>
           ${m.status==='Resolved' ? `<br/><span style="color:var(--ink-soft);">Resolved by ${esc(m.resolvedBy)} · ${fmtTime(m.resolvedAt)}</span>` : ''}
-          ${m.status==='Open' ? `<div style="margin-top:8px;"><button class="btn btn-sm" data-resolve="${m.id}">${profileRole==='incharge'?'Mark resolved':'Awaiting lab in-charge'}</button></div>` : ''}
+          ${m.status==='Open' ? `<div style="margin-top:8px;"><button class="btn btn-sm" data-resolve="${m.id}">${profileRole==='incharge' || profileRole==='owner'?'Mark resolved':'Awaiting lab in-charge'}</button></div>` : ''}
         </div>
       </div>
     `).join('');
