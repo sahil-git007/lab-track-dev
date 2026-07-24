@@ -378,7 +378,8 @@ async function renderAnalytics(){
   const availableUnits = equipment.reduce((s,e)=>s+e.availableQty,0);
   const activeCheckouts = checkouts.filter(c=>c.status==='Active');
   const overdue = activeCheckouts.filter(c=> c.dueTime && c.dueTime < now);
-  const underMaint = equipment.filter(e=>e.condition!=='Good').length;
+  // Fixed: Strictly count equipment under maintenance only if condition is not Good AND there is an open maintenance report
+  const underMaint = equipment.filter(e=> e.condition !== 'Good' && maintenance.some(m => m.equipmentId === e.id && m.status === 'Open')).length;
   const openMaint = maintenance.filter(m=>m.status==='Open').length;
 
   const usageCount = {};
@@ -421,8 +422,8 @@ async function renderAnalytics(){
 
 /* ============ EQUIPMENT INVENTORY ============ */
 async function renderInventory(){
-  const [equipment, checkouts] = await Promise.all([
-    loadList(KEYS.equipment, true), loadList(KEYS.checkouts, true)
+  const [equipment, checkouts, maintenance] = await Promise.all([
+    loadList(KEYS.equipment, true), loadList(KEYS.checkouts, true), loadList(KEYS.maintenance, true)
   ]);
   const main = document.getElementById('main');
   const isIncharge = profileRole==='incharge' || profileRole==='owner';
@@ -598,11 +599,19 @@ async function renderInventory(){
       }
       const idx = equipment.findIndex(x=>x.id===eqId);
       if(idx>-1) equipment.splice(idx,1);
-      const ok = await saveList(KEYS.equipment, equipment, true);
-      if(!ok){ showToast('Could not remove — check your connection and try again.', 'error'); return; }
+      
+      // Fixed: Clean up any associated maintenance reports for the deleted equipment safely
+      const updatedMaint = maintenance.filter(m=>m.equipmentId!==eqId);
+
+      const [okEq, okMaint] = await Promise.all([
+        saveList(KEYS.equipment, equipment, true),
+        saveList(KEYS.maintenance, updatedMaint, true)
+      ]);
+
+      if(!okEq || !okMaint){ showToast('Could not remove — check your connection and try again.', 'error'); return; }
       showToast(`${eq ? eq.name : 'Equipment'} removed.`, 'ok');
       confirmingRemove.delete(eqId);
-      drawList();
+      renderInventory();
     });
   };
   ['eqSearch','eqFilterCat','eqFilterCond'].forEach(id=> document.getElementById(id).addEventListener('input', drawList));
