@@ -113,7 +113,8 @@ const KEYS = {
   equipment:'lab:equipment',
   checkouts:'lab:checkouts',
   maintenance:'lab:maintenance',
-  tagCounter:'lab:tagCounter'
+  tagCounter:'lab:tagCounter',
+  notices:'lab:notices'
 };
 
 function buildNav(){
@@ -368,46 +369,99 @@ async function renderDashboard(){
   };
 }
 
-/* ============ NOTICES & UPDATES TAB ============ */
+/* ============ NOTICES & LIVE UPDATES TAB ============ */
 async function renderNotices(){
   const main = document.getElementById('main');
+  let notices = await loadList(KEYS.notices, true);
+  
+  // Default announcements if none posted yet
+  if(!notices.length){
+    notices = [
+      { id: '1', title: 'UI Modernization & Clean Home Screen', desc: 'Redesigned the main interface with a minimalist layout featuring a dedicated Home Screen button and collapsible hamburger menu (☰).', type: 'NEW', time: Date.now() },
+      { id: '2', title: 'Smart Content Moderation Engine', desc: 'Implemented strict automated text validation filters to block inappropriate slang, flooding, and gibberish across all checkout and maintenance records.', type: 'SYSTEM', time: Date.now() },
+      { id: '3', title: 'Lab Safety & Return Policy', desc: 'All equipment borrowed must be returned before the scheduled due time. Report any maintenance issues immediately via the Maintenance tab.', type: 'NOTICE', time: Date.now() }
+    ];
+  }
+
+  const isOwner = profileRole === 'owner';
+
   main.innerHTML = `
     <div class="module-head">
       <h2>Notices & Website Updates</h2>
-      <p>Recent announcements, system improvements, and laboratory safety guidelines.</p>
+      <p>Live announcements, website updates, and laboratory guidelines.</p>
     </div>
+    
+    ${isOwner ? `
+      <div class="panel" style="background: var(--paper); border-color: var(--accent); margin-bottom: 20px;">
+        <h3 style="color: var(--accent);">➕ Publish New Live Update (Owner Only)</h3>
+        <div class="form-row" style="margin-top: 10px;">
+          <div class="form-group"><label>Update Title</label><input id="noticeTitle" placeholder="e.g. New Oscilloscopes Added" /></div>
+          <div class="form-group"><label>Badge Tag</label>
+            <select id="noticeType">
+              <option value="NEW">NEW</option>
+              <option value="SYSTEM">SYSTEM</option>
+              <option value="NOTICE">NOTICE</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>Description</label><textarea id="noticeDesc" placeholder="Describe the update or notice…"></textarea></div>
+        </div>
+        <button class="btn btn-primary" id="publishNoticeBtn">Publish live update</button>
+      </div>
+    ` : ''}
+
     <div class="panel" style="background: var(--paper);">
       <h3 style="display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--grid); padding-bottom: 10px; margin-bottom: 14px;">
-        <span>📢</span> Announcements & Changelog
+        <span>📢</span> Live Announcements & Changelog
       </h3>
-      <div style="display: flex; flex-direction: column; gap: 16px; font-size: 0.95rem;">
-        <div style="display: flex; gap: 12px; align-items: flex-start; border-bottom: 1px dashed var(--grid); padding-bottom: 14px;">
-          <span class="badge badge-ok" style="margin-top: 2px;">NEW</span>
-          <div>
-            <strong>Dedicated Notices Menu & UI Modernization:</strong> Added a separate menu option to track updates, alongside a minimalist clean home screen layout and hamburger menu navigation.
-          </div>
-        </div>
-        <div style="display: flex; gap: 12px; align-items: flex-start; border-bottom: 1px dashed var(--grid); padding-bottom: 14px;">
-          <span class="badge badge-neutral" style="margin-top: 2px;">SYSTEM</span>
-          <div>
-            <strong>Smart Content Moderation Engine:</strong> Implemented strict automated text validation filters to block inappropriate slang, flooding, and gibberish across all checkout and maintenance records.
-          </div>
-        </div>
-        <div style="display: flex; gap: 12px; align-items: flex-start; border-bottom: 1px dashed var(--grid); padding-bottom: 14px;">
-          <span class="badge badge-neutral" style="margin-top: 2px;">SYSTEM</span>
-          <div>
-            <strong>Robust QR Code Engine:</strong> Upgraded client-side QR generation and scanning with deep-link payload routing and inversion parsing support.
-          </div>
-        </div>
-        <div style="display: flex; gap: 12px; align-items: flex-start;">
-          <span class="badge badge-warn" style="margin-top: 2px;">NOTICE</span>
-          <div>
-            <strong>Lab Safety & Return Policy:</strong> All equipment borrowed must be returned before the scheduled due time. Report any maintenance issues immediately via the Maintenance tab.
-          </div>
-        </div>
+      <div style="display: flex; flex-direction: column; gap: 16px; font-size: 0.95rem;" id="noticeListContainer">
+        ${notices.map(n=>{
+          const badgeClass = n.type === 'NEW' ? 'badge-ok' : n.type === 'NOTICE' ? 'badge-warn' : 'badge-neutral';
+          return `
+            <div style="display: flex; gap: 12px; align-items: flex-start; border-bottom: 1px dashed var(--grid); padding-bottom: 14px;">
+              <span class="badge ${badgeClass}" style="margin-top: 2px;">${n.type}</span>
+              <div style="flex: 1;">
+                <strong>${esc(n.title)}:</strong> ${esc(n.desc)}
+                <div style="font-size: 11px; color: var(--ink-soft); margin-top: 4px;">Posted on ${fmtTime(n.time)}</div>
+              </div>
+              ${isOwner ? `<button class="btn btn-sm" style="color: var(--rust); border-color: var(--rust);" data-delete-notice="${n.id}">Delete</button>` : ''}
+            </div>
+          `;
+        }).join('')}
       </div>
     </div>
   `;
+
+  if(isOwner){
+    document.getElementById('publishNoticeBtn').onclick = async ()=>{
+      const title = document.getElementById('noticeTitle').value.trim();
+      const desc = document.getElementById('noticeDesc').value.trim();
+      const type = document.getElementById('noticeType').value;
+      if(!title || !desc){ showToast('Fill in both title and description.', 'warn'); return; }
+
+      if(containsProfanityOrNonsense(title) || containsProfanityOrNonsense(desc)){
+        showToast('Invalid or meaningless text detected. Please enter a professional update.', 'error');
+        return;
+      }
+
+      notices.unshift({ id: uid(), title, desc, type, time: Date.now() });
+      const ok = await saveList(KEYS.notices, notices, true);
+      if(!ok){ showToast('Could not publish update.', 'error'); return; }
+      showToast('Live update published successfully!', 'ok');
+      renderNotices();
+    };
+
+    main.querySelectorAll('[data-delete-notice]').forEach(b=>{
+      b.onclick = async ()=>{
+        const id = b.dataset.deleteNotice;
+        const filtered = notices.filter(n => n.id !== id);
+        await saveList(KEYS.notices, filtered, true);
+        showToast('Update removed.', 'ok');
+        renderNotices();
+      };
+    });
+  }
 }
 
 /* ============ ANALYTICS DASHBOARD ============ */
@@ -569,7 +623,7 @@ async function renderInventory(){
           <div style="margin-top:8px;">Available: <strong class="mono">${e.availableQty} / ${e.totalQty}</strong>${fmtPrice(e.price) ? ` · Price: <strong class="mono">${fmtPrice(e.price)}</strong>` : ''}</div>
           ${e.description ? `<div style="margin-top:6px;color:var(--ink-soft);">${esc(e.description.length>140 ? e.description.slice(0,140)+'…' : e.description)}</div>` : ''}
           ${e.videoUrl ? `<span class="badge badge-ok" style="margin-top:6px;display:inline-block;">▶ Has video</span>` : ''}
-          ${!e.price && !e.description && !e.usageNotes && !e.videoUrl && isIncharge ? `<div style="margin-top:6px;font-size:12px;color:var(--amber);">No price/description/usage/video info yet.</div>` : ''}
+          ${!e.price && !e.description && !e.usageNotes && !e.videoUrl && isIncharge ? `<div style="margin-top:6px;font-size:12px;color:var(--amber);">&#128227; No price/description/usage/video info yet.</div>` : ''}
           ${isIncharge ? (editing ? `
             <div style="margin-top:10px;border-top:1px solid var(--grid);padding-top:10px;">
               <div class="form-group" style="margin-bottom:8px;"><label>Price (₹ per unit)</label><input id="editPrice-${e.id}" type="number" min="0" step="0.01" value="${e.price ?? ''}" /></div>
