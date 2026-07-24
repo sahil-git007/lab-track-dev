@@ -118,7 +118,7 @@ const KEYS = {
   clientVersion:'lab:client_version'
 };
 
-const CURRENT_BUILD_VERSION = 'v2.6.4-live';
+const CURRENT_BUILD_VERSION = 'v2.7.0-theme-pro';
 
 function buildNav(){
   const nav = [
@@ -141,8 +141,10 @@ function buildNav(){
   return nav;
 }
 
-/* ============ Boot & Auto Version Check ============ */
+/* ============ Boot, Theme & Auto Version Check ============ */
 async function boot(){
+  initThemeToggle();
+
   if(!authToken){ renderAuthScreen('login'); return; }
   try{
     const res = await apiFetch('/api/auth/me');
@@ -177,6 +179,23 @@ async function boot(){
   await switchTab('dashboard');
 }
 
+function initThemeToggle(){
+  const savedTheme = localStorage.getItem('labtrack_theme') || 'light';
+  document.documentElement.setAttribute('data-theme', savedTheme);
+  
+  const btn = document.getElementById('themeToggleBtn');
+  if(btn){
+    btn.textContent = savedTheme === 'dark' ? '☀️' : '🌙';
+    btn.onclick = ()=>{
+      const current = document.documentElement.getAttribute('data-theme');
+      const next = current === 'dark' ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', next);
+      localStorage.setItem('labtrack_theme', next);
+      btn.textContent = next === 'dark' ? '☀️' : '🌙';
+    };
+  }
+}
+
 async function checkAndPublishAutoNotice(){
   try{
     let lastVersion = await storageGet(KEYS.clientVersion, true);
@@ -184,8 +203,8 @@ async function checkAndPublishAutoNotice(){
       let notices = await loadList(KEYS.notices, true);
       const autoUpdateNotice = {
         id: uid(),
-        title: `Automatic System Update (${CURRENT_BUILD_VERSION})`,
-        desc: 'New website changes, stability enhancements, and security rules have been successfully deployed live.',
+        title: `Automated System Update (${CURRENT_BUILD_VERSION})`,
+        desc: 'New professional UI themes, dark/light mode switcher, and advanced change detection rules deployed live.',
         type: 'SYSTEM',
         time: Date.now()
       };
@@ -214,7 +233,7 @@ function renderProfileBox(){
     <div class="profile-pill">
       <span class="dot"></span><span>${esc(profileName)}</span>
       <span class="badge ${profileRole==='owner'?'badge-rust':profileRole==='incharge'?'badge-warn':'badge-neutral'}">${roleLabel}</span>
-      <span class="tag-id" style="color:#9FB6C7;">${esc(currentUser.collegeCode)}</span>
+      <span class="tag-id" style="color:var(--ink-soft);">${esc(currentUser.collegeCode)}</span>
       <button id="logoutBtn">log out</button>
     </div>`;
   document.getElementById('logoutBtn').onclick = ()=> doLogout(true);
@@ -234,8 +253,8 @@ function renderAuthScreen(mode, errorMsg){
       <div class="form-group"><label>Password</label><input id="loPassword" type="password" /></div>
       <button class="btn btn-primary" id="loSubmit">Sign in</button>
       <div class="switch-mode">New here? <a id="toRegister">Create an account</a></div>
-      <div style="text-align: center; margin-top: 25px; font-size: 0.825rem; color: #64748b; border-top: 1px dashed #e2e8f0; padding-top: 15px;">
-        Made with ❤️ by <a href="https://github.com/sahil-git007" target="_blank" style="color: #16324F; font-weight: 600; text-decoration: none;">Sahil Sahoo</a>
+      <div style="text-align: center; margin-top: 25px; font-size: 0.825rem; color: var(--ink-soft); border-top: 1px dashed var(--grid); padding-top: 15px;">
+        Made with ❤️ by <a href="https://github.com/sahil-git007" target="_blank" style="color: var(--accent); font-weight: 600; text-decoration: none;">Sahil Sahoo</a>
       </div>
     `;
     document.getElementById('toRegister').onclick = ()=> renderAuthScreen('register');
@@ -331,7 +350,7 @@ function showToast(msg, type='info'){
   };
   const c = colors[type] || colors.info;
   const toast = document.createElement('div');
-  toast.style.cssText = `background:${c.bg};color:${c.fg};padding:10px 14px;border-radius:6px;font-size:13px;font-family:'IBM Plex Sans',sans-serif;box-shadow:0 6px 16px rgba(0,0,0,0.25);`;
+  toast.style.cssText = `background:${c.bg};color:${c.fg};padding:10px 14px;border-radius:8px;font-size:13px;font-family:'IBM Plex Sans',sans-serif;box-shadow:0 6px 16px rgba(0,0,0,0.25);`;
   toast.textContent = msg;
   host.appendChild(toast);
   setTimeout(()=>{ toast.style.transition='opacity .3s'; toast.style.opacity='0'; setTimeout(()=>toast.remove(), 300); }, 3800);
