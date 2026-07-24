@@ -70,7 +70,6 @@ function containsProfanityOrNonsense(text){
   const clean = text.trim();
   const lower = clean.toLowerCase();
 
-  // 1. Explicit profanity / vulgarity blacklist
   const badWords = [
     'sperm', 'jhonny', 'johnny', 'sins', 'sex', 'porn', 'fuck', 'shit', 'bitch', 
     'ass', 'damn', 'dick', 'cock', 'pussy', 'bastard', 'chor market', 'bloody', 'randi', 'lund', 'choot'
@@ -79,14 +78,11 @@ function containsProfanityOrNonsense(text){
     if(lower.includes(word)) return true;
   }
 
-  // 2. Prevent character spam / flooding (e.g. "aaaaaa", "zzzzzz")
   if(/(.)\1{3,}/.test(lower)) return true;
 
-  // 3. Ensure text contains at least 3 distinct words (blocks random keyboard smashing like "sdcb n eyufgneyfgenfygefveget")
   const words = clean.split(/\s+/).filter(w => w.length > 1);
   if(words.length < 2) return true;
 
-  // 4. Check if words look like random gibberish (too many consonants in a row without vowels or sounding fake)
   for(let w of words){
     if(w.length > 5 && !/[aeiouy]/i.test(w)) return true;
   }
@@ -123,6 +119,7 @@ const KEYS = {
 function buildNav(){
   const nav = [
     {group:'Home', items:[{id:'dashboard', label:'Home Screen', icon:'&#8962;'}]},
+    {group:'Updates', items:[{id:'notices', label:'Notices & Updates', icon:'&#128227;'}]},
     {group:'Overview', items:[{id:'analytics', label:'Dashboard', icon:'&#9635;'}]},
     {group:'Inventory', items:[
       {id:'inventory', label:'Equipment', icon:'&#9881;'},
@@ -328,47 +325,20 @@ async function switchTab(tab){
   renderSidebar();
   const main = document.getElementById('main');
   main.innerHTML = `<div class="loading-note">Loading ${tab}…</div>`;
-  const renderers = { dashboard:renderDashboard, analytics:renderAnalytics, inventory:renderInventory, checkout:renderCheckout, usage:renderUsage, maintenance:renderMaintenance, scan:renderScan, users:renderUsers };
+  const renderers = { dashboard:renderDashboard, notices:renderNotices, analytics:renderAnalytics, inventory:renderInventory, checkout:renderCheckout, usage:renderUsage, maintenance:renderMaintenance, scan:renderScan, users:renderUsers };
   await renderers[tab]();
 }
 
 async function nextTag(){ tagCounter += 1; await storageSet(KEYS.tagCounter, String(tagCounter), true); return 'LAB-EQ-'+String(tagCounter).padStart(4,'0'); }
 
-/* ============ CLEAN DASHBOARD (HOME SCREEN) WITH NOTICES ============ */
+/* ============ CLEAN DASHBOARD (HOME SCREEN) ============ */
 async function renderDashboard(){
   const main = document.getElementById('main');
   main.innerHTML = `
     <div class="clean-home-wrapper">
       <div class="clean-home-title">SAHIL SAHOO</div>
       <div class="clean-home-subtitle">CSE DEPARTMENT</div>
-      <div class="clean-home-hint" style="margin-bottom: 30px;">Click the top-left menu (☰) to access all tools and inventory.</div>
-
-      <!-- Notices and Website Improvements Panel -->
-      <div class="panel" style="width: 100%; max-width: 700px; text-align: left; margin: 0 auto; background: var(--paper);">
-        <h3 style="display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--grid); padding-bottom: 10px; margin-bottom: 14px;">
-          <span>📢</span> Lab Notices & Website Updates
-        </h3>
-        <div style="display: flex; flex-direction: column; gap: 12px; font-size: 0.9rem;">
-          <div style="display: flex; gap: 10px; align-items: flex-start; border-bottom: 1px dashed var(--grid); padding-bottom: 10px;">
-            <span class="badge badge-ok" style="margin-top: 2px;">NEW</span>
-            <div>
-              <strong>UI Modernization & Clean Home Screen:</strong> Redesigned the main interface with a minimalist layout featuring a dedicated Home Screen button and collapsible hamburger menu (☰).
-            </div>
-          </div>
-          <div style="display: flex; gap: 10px; align-items: flex-start; border-bottom: 1px dashed var(--grid); padding-bottom: 10px;">
-            <span class="badge badge-neutral" style="margin-top: 2px;">SYSTEM</span>
-            <div>
-              <strong>Robust QR Code Engine:</strong> Upgraded client-side QR generation and scanning with deep-link payload routing and inversion parsing support.
-            </div>
-          </div>
-          <div style="display: flex; gap: 10px; align-items: flex-start;">
-            <span class="badge badge-warn" style="margin-top: 2px;">NOTICE</span>
-            <div>
-              <strong>Lab Safety & Return Policy:</strong> All equipment borrowed must be returned before the scheduled due time. Report any maintenance issues immediately via the Maintenance tab.
-            </div>
-          </div>
-        </div>
-      </div>
+      <div class="clean-home-hint">Click the top-left menu (☰) to access all tools and inventory.</div>
     </div>
   `;
 
@@ -396,6 +366,48 @@ async function renderDashboard(){
       sb.classList.remove('open');
     }
   };
+}
+
+/* ============ NOTICES & UPDATES TAB ============ */
+async function renderNotices(){
+  const main = document.getElementById('main');
+  main.innerHTML = `
+    <div class="module-head">
+      <h2>Notices & Website Updates</h2>
+      <p>Recent announcements, system improvements, and laboratory safety guidelines.</p>
+    </div>
+    <div class="panel" style="background: var(--paper);">
+      <h3 style="display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--grid); padding-bottom: 10px; margin-bottom: 14px;">
+        <span>📢</span> Announcements & Changelog
+      </h3>
+      <div style="display: flex; flex-direction: column; gap: 16px; font-size: 0.95rem;">
+        <div style="display: flex; gap: 12px; align-items: flex-start; border-bottom: 1px dashed var(--grid); padding-bottom: 14px;">
+          <span class="badge badge-ok" style="margin-top: 2px;">NEW</span>
+          <div>
+            <strong>Dedicated Notices Menu & UI Modernization:</strong> Added a separate menu option to track updates, alongside a minimalist clean home screen layout and hamburger menu navigation.
+          </div>
+        </div>
+        <div style="display: flex; gap: 12px; align-items: flex-start; border-bottom: 1px dashed var(--grid); padding-bottom: 14px;">
+          <span class="badge badge-neutral" style="margin-top: 2px;">SYSTEM</span>
+          <div>
+            <strong>Smart Content Moderation Engine:</strong> Implemented strict automated text validation filters to block inappropriate slang, flooding, and gibberish across all checkout and maintenance records.
+          </div>
+        </div>
+        <div style="display: flex; gap: 12px; align-items: flex-start; border-bottom: 1px dashed var(--grid); padding-bottom: 14px;">
+          <span class="badge badge-neutral" style="margin-top: 2px;">SYSTEM</span>
+          <div>
+            <strong>Robust QR Code Engine:</strong> Upgraded client-side QR generation and scanning with deep-link payload routing and inversion parsing support.
+          </div>
+        </div>
+        <div style="display: flex; gap: 12px; align-items: flex-start;">
+          <span class="badge badge-warn" style="margin-top: 2px;">NOTICE</span>
+          <div>
+            <strong>Lab Safety & Return Policy:</strong> All equipment borrowed must be returned before the scheduled due time. Report any maintenance issues immediately via the Maintenance tab.
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
 }
 
 /* ============ ANALYTICS DASHBOARD ============ */
@@ -820,7 +832,6 @@ async function renderMaintenance(){
     const issueInput = document.getElementById('mtIssue');
     const issue = issueInput.value.trim();
 
-    // Strict validation check blocking flooding, repetition, and gibberish
     if(containsProfanityOrNonsense(issue)){
       showToast('Invalid description. Please provide a meaningful, professional description (at least 2 valid words).', 'error');
       issueInput.focus();
