@@ -1,35 +1,90 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>LabTrack — Smart Equipment Tracking</title>
-<link rel="stylesheet" href="css/styles.css" />
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LabTrack — Smart Equipment Tracking</title>
+  <link rel="stylesheet" href="css/styles.css" />
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <!-- QR Code Generator Library -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  <!-- QR Scanner / Decoder Library -->
+  <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
 </head>
 <body>
-<div id="authOverlay" class="auth-overlay">
-  <div class="auth-card" id="authCard"></div>
-</div>
 
-<div id="app">
-  <div class="topbar">
-    <div class="brand">
-      <div class="brand-mark">LT</div>
-      <div class="brand-text">
-        <div class="name">LabTrack</div>
-        <div class="tag">Smart Equipment Tracking</div>
+  <div id="app">
+    <!-- Top Navigation Bar -->
+    <header class="topbar">
+      <div class="brand">
+        <button id="hamburgerToggle" class="hamburger-btn" title="Toggle Navigation Menu">☰</button>
+        <div class="brand-logo-wrap" style="display: flex; align-items: center; gap: 12px;">
+          <div class="brand-mark-glow" style="
+            background: linear-gradient(135deg, #24806B 0%, #16324F 100%);
+            color: #ffffff;
+            width: 42px;
+            height: 42px;
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 800;
+            font-size: 1.15rem;
+            letter-spacing: -0.03em;
+            box-shadow: 0 4px 15px rgba(36, 128, 107, 0.35);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            position: relative;
+            overflow: hidden;
+          ">
+            <span style="position: relative; z-index: 2;">LT</span>
+            <div style="
+              position: absolute;
+              top: -50%;
+              left: -50%;
+              width: 200%;
+              height: 200%;
+              background: radial-gradient(circle, rgba(255,255,255,0.25) 0%, transparent 70%);
+              transform: rotate(30deg);
+              pointer-events: none;
+            "></div>
+          </div>
+          <div class="brand-text" style="display: flex; flex-direction: column;">
+            <span style="font-weight: 800; font-size: 1.15rem; letter-spacing: -0.02em; color: var(--ink); line-height: 1.2;">LabTrack</span>
+            <span style="font-size: 0.72rem; font-weight: 700; color: var(--accent); letter-spacing: 0.08em; text-transform: uppercase;">Smart Tracking</span>
+          </div>
+        </div>
       </div>
-    </div>
-    <div class="profile-box" id="profileBox"></div>
-  </div>
-  <div class="shell">
-    <div class="sidebar" id="sidebar"></div>
-    <div class="main" id="main"></div>
-  </div>
-</div>
 
-<script src="js/qrcode.min.js"></script>
-<script src="js/jsQR.js"></script>
-<script src="js/app.js"></script>
+      <div class="topbar-right" style="display: flex; align-items: center; gap: 14px;">
+        <button id="themeToggleBtn" class="theme-toggle-btn" title="Toggle Dark/Light Mode">🌙</button>
+        <div id="profileBox"></div>
+      </div>
+    </header>
+
+    <!-- Main Workspace Shell -->
+    <div class="shell">
+      <!-- Collapsible Sidebar Navigation -->
+      <nav id="sidebar"></nav>
+
+      <!-- Dynamic Content View Area -->
+      <main id="main">
+        <div class="loading-note">Initializing application…</div>
+      </main>
+    </div>
+  </div>
+
+  <!-- Authentication Overlay Modal -->
+  <div id="authOverlay" class="auth-overlay" style="display:none;">
+    <div id="authCard" class="auth-card"></div>
+  </div>
+
+  <!-- Toast Notification Host -->
+  <div id="toastHost"></div>
+
+  <!-- Application Script -->
+  <script src="js/app.js"></script>
 </body>
 </html>
