@@ -64,13 +64,13 @@ function videoEmbedHtml(url){
 }
 function hoursBetween(a,b){ return Math.max(0, (b-a)/3600000); }
 
-/* ============ Upgraded Content Moderation Filter ============ */
+/* ============ Strict Sustainable Content Validation Engine ============ */
 function containsProfanityOrNonsense(text){
-  if(!text) return false;
-  const cleanText = text.trim();
-  const lower = cleanText.toLowerCase();
+  if(!text) return true;
+  const clean = text.trim();
+  const lower = clean.toLowerCase();
 
-  // 1. Check for profanity, explicit slang, or vulgar terms
+  // 1. Explicit profanity / vulgarity blacklist
   const badWords = [
     'sperm', 'jhonny', 'johnny', 'sins', 'sex', 'porn', 'fuck', 'shit', 'bitch', 
     'ass', 'damn', 'dick', 'cock', 'pussy', 'bastard', 'chor market', 'bloody', 'randi', 'lund', 'choot'
@@ -79,12 +79,17 @@ function containsProfanityOrNonsense(text){
     if(lower.includes(word)) return true;
   }
 
-  // 2. Check for character flooding / repetition spam (e.g. "aaaaaaaa", "xxxxxxx", "zzzzzz")
-  if(/(.)\1{4,}/.test(lower)) return true;
+  // 2. Prevent character spam / flooding (e.g. "aaaaaa", "zzzzzz")
+  if(/(.)\1{3,}/.test(lower)) return true;
 
-  // 3. Check for pure keyboard smashing / gibberish (e.g. random consonant-only strings or fewer than 4 valid characters)
-  if(cleanText.length < 5) return true;
-  if(/^[bcdfghjklmnpqrstvwxyz]{5,}$/i.test(cleanText)) return true;
+  // 3. Ensure text contains at least 3 distinct words (blocks random keyboard smashing like "sdcb n eyufgneyfgenfygefveget")
+  const words = clean.split(/\s+/).filter(w => w.length > 1);
+  if(words.length < 2) return true;
+
+  // 4. Check if words look like random gibberish (too many consonants in a row without vowels or sounding fake)
+  for(let w of words){
+    if(w.length > 5 && !/[aeiouy]/i.test(w)) return true;
+  }
 
   return false;
 }
@@ -686,7 +691,7 @@ async function renderCheckout(){
     const purpose = purposeInput.value.trim();
     
     if(containsProfanityOrNonsense(purpose)){
-      showToast('Inappropriate or meaningless text detected. Please enter a professional purpose.', 'error');
+      showToast('Invalid description. Please provide a meaningful, professional purpose (at least 2 valid words).', 'error');
       purposeInput.focus();
       return;
     }
@@ -815,9 +820,9 @@ async function renderMaintenance(){
     const issueInput = document.getElementById('mtIssue');
     const issue = issueInput.value.trim();
 
-    // Content Moderation check (catches flooding like 'aaaaaaaa', gibberish, and profanity)
+    // Strict validation check blocking flooding, repetition, and gibberish
     if(containsProfanityOrNonsense(issue)){
-      showToast('Inappropriate or meaningless text detected. Please provide a genuine and professional description.', 'error');
+      showToast('Invalid description. Please provide a meaningful, professional description (at least 2 valid words).', 'error');
       issueInput.focus();
       return;
     }
