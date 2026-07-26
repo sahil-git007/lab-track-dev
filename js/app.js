@@ -118,7 +118,7 @@ const KEYS = {
   clientVersion:'lab:client_version'
 };
 
-const CURRENT_BUILD_VERSION = 'v2.8.7-full-mgmt-fix';
+const CURRENT_BUILD_VERSION = 'v2.8.8-strict-login-gate';
 
 function buildNav(){
   const nav = [
@@ -152,12 +152,13 @@ async function boot(){
     const data = await res.json();
     currentUser = data.user;
     
+    // Check local storage approval overrides
     const localApprovals = JSON.parse(localStorage.getItem('labtrack_approved_users') || '{}');
     if(localApprovals[currentUser.id]){
        currentUser.status = 'approved';
     }
 
-    // STRICT CHECK: Block sign in if pending and not owner
+    // STRICT BOOT GATE: Prevent unapproved accounts from initializing the dashboard
     if(currentUser.status && currentUser.status !== 'approved' && currentUser.role !== 'owner'){
       doLogout(false);
       renderAuthScreen('login', 'Your account is pending approval by your Lab In-Charge or Owner.');
@@ -217,7 +218,7 @@ async function checkAndPublishAutoNotice(){
       const autoUpdateNotice = {
         id: uid(),
         title: `Automated System Update (${CURRENT_BUILD_VERSION})`,
-        desc: 'Ensured management and approval navigation links are visible for authorized In-Charge and Owner roles.',
+        desc: 'Enforced strict login and boot verification for pending accounts.',
         type: 'SYSTEM',
         time: Date.now()
       };
@@ -289,8 +290,10 @@ function renderAuthScreen(mode, errorMsg){
            const localApprovals = JSON.parse(localStorage.getItem('labtrack_approved_users') || '{}');
            const isLocallyApproved = localApprovals[user.id];
            
-           if(user.status && user.status !== 'approved' && !isLocallyApproved) {
+           // STRICT LOGIN CHECK: If not approved, stop login and display pending warning popup
+           if(user.status !== 'approved' && !isLocallyApproved) {
               renderAuthScreen('login', 'Your account is pending approval by your Lab In-Charge or Owner.');
+              showToast('Your account is pending approval by your Lab In-Charge or Owner.', 'error');
               return;
            }
         }
@@ -1258,7 +1261,7 @@ async function lookupAndShow(tagOrId){
         <div style="margin-bottom:14px;">
           <div style="font-size:12px;font-weight:700;color:var(--ink-soft);text-transform:uppercase;letter-spacing:0.03em;margin-bottom:6px;">Currently checked out</div>
           <div style="font-size:13.5px;">${esc(activeCheckout.borrower)} · ×${activeCheckout.qty} · due ${fmtTime(activeCheckout.dueTime)}</div>
-        </div>` : `<div style="margin-bottom:14px;color:var(--ink-soft);font-size:13.5px;">Not currently checked out.</div>`}
+        </div>` : `<div style="margin-bottom:14px;color:var(--ink-soft);font-size:13px;">Not currently checked out.</div>`}
 
       ${openIssue ? `
         <div style="margin-bottom:14px;">
@@ -1401,7 +1404,7 @@ async function renderUsers(){
           body: JSON.stringify({ role: sel.value })
         });
         showToast('Role updated.', 'ok');
-      } catch(e) {
+      }catch(e){
         showToast('Role updated locally.', 'ok');
       }
     });
@@ -1418,7 +1421,7 @@ async function renderUsers(){
         showToast('User removed.', 'ok');
         users = users.filter(u=>u.id!==b.dataset.delete);
         draw();
-      } catch(e) {
+      }catch(e){
         showToast('User removed.', 'ok');
         users = users.filter(u=>u.id!==b.dataset.delete);
         draw();
