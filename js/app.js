@@ -1,7 +1,7 @@
 /* ============ Auth + Storage (real backend, college-code scoped) ============ */
 const AUTH_KEY = 'labtrack_auth_token';
 let authToken = localStorage.getItem(AUTH_KEY) || null;
-let currentUser = null; // { id, fullName, collegeName, department, collegeCode, role }
+let currentUser = null; // { id, fullName, collegeName, department, collegeCode, collegeEmail, username, role, status }
 
 function authHeaders(extra={}){
   const h = { ...extra };
@@ -118,7 +118,7 @@ const KEYS = {
   clientVersion:'lab:client_version'
 };
 
-const CURRENT_BUILD_VERSION = 'v2.7.3-notice-fix';
+const CURRENT_BUILD_VERSION = 'v2.8.0-approval-flow';
 
 function buildNav(){
   const nav = [
@@ -135,8 +135,8 @@ function buildNav(){
     ]},
     {group:'Upkeep', items:[{id:'maintenance', label:'Maintenance', icon:'&#128295;'}]},
   ];
-  if(profileRole==='owner'){
-    nav.push({group:'Owner', items:[{id:'users', label:'Manage Users', icon:'&#128100;'}]});
+  if(profileRole==='owner' || profileRole==='incharge'){
+    nav.push({group:'Management', items:[{id:'users', label:'Manage Users & Approvals', icon:'&#128100;'}]});
   }
   return nav;
 }
@@ -204,7 +204,7 @@ async function checkAndPublishAutoNotice(){
       const autoUpdateNotice = {
         id: uid(),
         title: `Automated System Update (${CURRENT_BUILD_VERSION})`,
-        desc: 'Restored owner notice publishing panel and verified all interface views.',
+        desc: 'Added mandatory college email registration, username field, and In-Charge/Owner account approval workflow.',
         type: 'SYSTEM',
         time: Date.now()
       };
@@ -249,7 +249,7 @@ function renderAuthScreen(mode, errorMsg){
       <p class="sub">Your college code routes you to your college's own equipment and records.</p>
       ${errorMsg?`<div class="err">${esc(errorMsg)}</div>`:''}
       <div class="form-group"><label>College code</label><input id="loCollegeCode" placeholder="e.g. GECX2026" /></div>
-      <div class="form-group"><label>Username or email</label><input id="loUsername" /></div>
+      <div class="form-group"><label>Username or College Email</label><input id="loUsername" /></div>
       <div class="form-group"><label>Password</label><input id="loPassword" type="password" /></div>
       <button class="btn btn-primary" id="loSubmit">Sign in</button>
       <div class="switch-mode">New here? <a id="toRegister">Create an account</a></div>
@@ -280,43 +280,59 @@ function renderAuthScreen(mode, errorMsg){
   } else {
     card.innerHTML = `
       <h2>Create your account</h2>
-      <p class="sub">Everyone signs up as a Student. Your Lab In-Charge or Owner can upgrade your role afterward.</p>
+      <p class="sub">New accounts require approval from your Lab In-Charge or Owner before signing in.</p>
       ${errorMsg?`<div class="err">${esc(errorMsg)}</div>`:''}
       <div class="form-row">
         <div class="form-group"><label>Full name</label><input id="reName" placeholder="e.g. Aditi Sharma" /></div>
+        <div class="form-group"><label>Username</label><input id="reUsername" placeholder="e.g. aditi_07" /></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>College Email Address</label><input id="reEmail" type="email" placeholder="e.g. aditi@college.edu" /></div>
       </div>
       <div class="form-row">
         <div class="form-group"><label>College name</label><input id="reCollege" placeholder="e.g. Government Engineering College" /></div>
         <div class="form-group"><label>Department</label><input id="reDept" placeholder="e.g. CSE" /></div>
       </div>
       <div class="form-group"><label>College code</label><input id="reCollegeCode" placeholder="Ask your lab in-charge for this" /></div>
-      <div class="form-group"><label>Username or email</label><input id="reUsername" /></div>
       <div class="form-group"><label>Password</label><input id="rePassword" type="password" /></div>
-      <button class="btn btn-primary" id="reSubmit">Create account</button>
-      <div class="switch-mode">Already have an account? <a id="toLogin">Sign in</a></div>
+      <button class="btn btn-primary" id="reSubmit">Submit for approval</button>
+      <div class="switch-mode">Already have an approved account? <a id="toLogin">Sign in</a></div>
     `;
     document.getElementById('toLogin').onclick = ()=> renderAuthScreen('login');
     document.getElementById('reSubmit').onclick = async ()=>{
       const fullName = document.getElementById('reName').value.trim();
+      const username = document.getElementById('reUsername').value.trim();
+      const collegeEmail = document.getElementById('reEmail').value.trim();
       const collegeName = document.getElementById('reCollege').value.trim();
       const department = document.getElementById('reDept').value.trim();
       const collegeCode = document.getElementById('reCollegeCode').value.trim();
-      const username = document.getElementById('reUsername').value.trim();
       const password = document.getElementById('rePassword').value;
-      if(!fullName||!collegeName||!department||!collegeCode||!username||!password){
+
+      if(!fullName||!username||!collegeEmail||!collegeName||!department||!collegeCode||!password){
         renderAuthScreen('register', 'Fill in every field.'); return;
+      }
+      if(!collegeEmail.includes('@')){
+        renderAuthScreen('register', 'Enter a valid college email address.'); return;
       }
       if(password.length < 6){ renderAuthScreen('register', 'Password must be at least 6 characters.'); return; }
       try{
         const res = await fetch('/api/auth/register', {
           method:'POST', headers:{'Content-Type':'application/json'},
-          body: JSON.stringify({ fullName, collegeName, department, collegeCode, username, password })
+          body: JSON.stringify({ fullName, username, collegeEmail, collegeName, department, collegeCode, password })
         });
         const data = await res.json();
         if(!res.ok){ renderAuthScreen('register', data.error || 'Registration failed.'); return; }
-        authToken = data.token;
-        localStorage.setItem(AUTH_KEY, authToken);
-        boot();
+        
+        // Show pending notice modal or screen
+        card.innerHTML = `
+          <h2>Account Pending Approval</h2>
+          <p class="sub">Your account has been registered successfully with <strong>${esc(collegeEmail)}</strong> and is awaiting review by your Lab In-Charge or Owner.</p>
+          <div style="background:var(--paper);border:1px solid var(--grid);padding:14px;border-radius:8px;margin:16px 0;font-size:13.5px;color:var(--ink);">
+            Status: <strong style="color:var(--amber);">PENDING APPROVAL</strong>
+          </div>
+          <button class="btn btn-primary" id="backToLogin">Return to Sign In</button>
+        `;
+        document.getElementById('backToLogin').onclick = ()=> renderAuthScreen('login');
       }catch(e){ renderAuthScreen('register', 'Could not reach the server.'); }
     };
   }
@@ -1243,44 +1259,48 @@ async function lookupAndShow(tagOrId){
   resultEl.querySelectorAll('[data-go]').forEach(b=> b.onclick = ()=> switchTab(b.dataset.go));
 }
 
-/* ============ OWNER: MANAGE USERS & HISTORY RESET ============ */
+/* ============ MANAGEMENT: MANAGE USERS, APPROVALS & HISTORY RESET ============ */
 async function renderUsers(){
   const main = document.getElementById('main');
-  if(profileRole!=='owner'){
-    main.innerHTML = `<div class="empty">This section is only available to the Owner account.</div>`;
+  if(profileRole!=='owner' && profileRole!=='incharge'){
+    main.innerHTML = `<div class="empty">This section is only available to Lab In-Charge and Owner accounts.</div>`;
     return;
   }
   main.innerHTML = `
     <div class="module-head">
-      <h2>Manage Users</h2>
-      <p>Every registered account, across every college code. Promote a Student to Lab In-Charge, or remove an account entirely.</p>
+      <h2>Manage Users & Approvals</h2>
+      <p>Approve pending accounts, promote roles, or remove accounts across your college code.</p>
     </div>
     <div class="panel">
       <div id="usersBody"><div class="loading-note">Loading users…</div></div>
     </div>
 
-    <!-- Owner Clear History Panel -->
-    <div class="panel" style="margin-top: 24px; border-color: var(--rust);">
-      <h3 style="color: var(--rust);">⚠️ Clear All Lab History Records</h3>
-      <p style="font-size: 0.9rem; color: var(--ink-soft); margin-bottom: 14px;">
-        Wipe clean all historical checkouts, returns, and maintenance report records across the college. Equipment inventory will not be deleted.
-      </p>
-      <button class="btn" id="clearHistoryBtn" style="border-color: var(--rust); color: var(--rust);">Clear all history records</button>
-    </div>
+    ${profileRole==='owner' ? `
+      <!-- Owner Clear History Panel -->
+      <div class="panel" style="margin-top: 24px; border-color: var(--rust);">
+        <h3 style="color: var(--rust);">⚠️ Clear All Lab History Records</h3>
+        <p style="font-size: 0.9rem; color: var(--ink-soft); margin-bottom: 14px;">
+          Wipe clean all historical checkouts, returns, and maintenance report records across the college. Equipment inventory will not be deleted.
+        </p>
+        <button class="btn" id="clearHistoryBtn" style="border-color: var(--rust); color: var(--rust);">Clear all history records</button>
+      </div>
+    ` : ''}
   `;
 
-  document.getElementById('clearHistoryBtn').onclick = async ()=>{
-    if(!confirm('Are you sure you want to clear all checkout and maintenance history? This cannot be undone.')) return;
-    try{
-      await Promise.all([
-        saveList(KEYS.checkouts, [], true),
-        saveList(KEYS.maintenance, [], true)
-      ]);
-      showToast('All lab history records cleared successfully.', 'ok');
-    }catch(e){
-      showToast('Could not clear history.', 'error');
-    }
-  };
+  if(profileRole==='owner'){
+    document.getElementById('clearHistoryBtn').onclick = async ()=>{
+      if(!confirm('Are you sure you want to clear all checkout and maintenance history? This cannot be undone.')) return;
+      try{
+        await Promise.all([
+          saveList(KEYS.checkouts, [], true),
+          saveList(KEYS.maintenance, [], true)
+        ]);
+        showToast('All lab history records cleared successfully.', 'ok');
+      }catch(e){
+        showToast('Could not clear history.', 'error');
+      }
+    };
+  }
 
   let users = [];
   try{
@@ -1296,26 +1316,41 @@ async function renderUsers(){
     if(!users.length){ body.innerHTML = `<div class="empty">No users registered yet.</div>`; return; }
     body.innerHTML = `
       <div class="user-row head">
-        <div>Name</div><div>College</div><div>Dept</div><div>Code</div><div>Role</div><div></div>
+        <div>Name / Email</div><div>Dept</div><div>Code</div><div>Status</div><div>Role</div><div>Actions</div>
       </div>
       ${users.map(u=>`
         <div class="user-row">
-          <div>${esc(u.fullName)}<br/><span class="tag-id">${esc(u.username)}</span></div>
-          <div>${esc(u.collegeName)}</div>
+          <div>${esc(u.fullName)}<br/><span class="tag-id">${esc(u.collegeEmail || u.username)}</span></div>
           <div>${esc(u.department)}</div>
           <div class="mono">${esc(u.collegeCode)}</div>
           <div>
+            <span class="badge ${u.status==='approved'?'badge-ok':'badge-warn'}">${u.status==='approved'?'Approved':'Pending'}</span>
+          </div>
+          <div>
             ${u.role==='owner'
               ? `<span class="badge badge-rust">Owner</span>`
-              : `<select data-role="${u.id}">
+              : (profileRole==='owner' ? `<select data-role="${u.id}">
                    <option value="student" ${u.role==='student'?'selected':''}>Student</option>
                    <option value="incharge" ${u.role==='incharge'?'selected':''}>Lab In-Charge</option>
-                 </select>`}
+                 </select>` : `<span class="badge badge-neutral">${u.role}</span>`)}
           </div>
-          <div>${u.role==='owner' ? '' : `<button class="btn btn-sm" style="color:var(--rust);" data-delete="${u.id}">Remove</button>`}</div>
+          <div style="display:flex;gap:6px;align-items:center;">
+            ${u.status !== 'approved' ? `<button class="btn btn-sm btn-primary" data-approve="${u.id}">Approve</button>` : ''}
+            ${u.role!=='owner' ? `<button class="btn btn-sm" style="color:var(--rust);" data-delete="${u.id}">Remove</button>` : ''}
+          </div>
         </div>
       `).join('')}
     `;
+
+    body.querySelectorAll('[data-approve]').forEach(b=> b.onclick = async ()=>{
+      const res = await apiFetch(`/api/owner/users/${b.dataset.approve}`, {
+        method:'PATCH', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ status: 'approved' })
+      });
+      if(res.ok){ showToast('Account approved successfully!', 'ok'); renderUsers(); }
+      else{ showToast('Could not approve account.', 'error'); }
+    });
+
     body.querySelectorAll('[data-role]').forEach(sel=> sel.onchange = async ()=>{
       const res = await apiFetch(`/api/owner/users/${sel.dataset.role}`, {
         method:'PATCH', headers:{'Content-Type':'application/json'},
@@ -1324,6 +1359,7 @@ async function renderUsers(){
       if(res.ok){ showToast('Role updated.', 'ok'); }
       else{ showToast('Could not update role.', 'error'); }
     });
+
     body.querySelectorAll('[data-delete]').forEach(b=> b.onclick = async ()=>{
       if(b.dataset.confirming!=='1'){
         b.dataset.confirming = '1';
