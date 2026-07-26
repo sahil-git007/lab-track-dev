@@ -118,7 +118,7 @@ const KEYS = {
   clientVersion:'lab:client_version'
 };
 
-const CURRENT_BUILD_VERSION = 'v2.8.5-global-approval-gate';
+const CURRENT_BUILD_VERSION = 'v2.8.7-full-mgmt-fix';
 
 function buildNav(){
   const nav = [
@@ -152,13 +152,13 @@ async function boot(){
     const data = await res.json();
     currentUser = data.user;
     
-    // Cross-check with local approval cache directly inside boot sequence
     const localApprovals = JSON.parse(localStorage.getItem('labtrack_approved_users') || '{}');
     if(localApprovals[currentUser.id]){
        currentUser.status = 'approved';
     }
 
-    if(currentUser.status !== 'approved' && currentUser.role !== 'owner'){
+    // STRICT CHECK: Block sign in if pending and not owner
+    if(currentUser.status && currentUser.status !== 'approved' && currentUser.role !== 'owner'){
       doLogout(false);
       renderAuthScreen('login', 'Your account is pending approval by your Lab In-Charge or Owner.');
       return;
@@ -217,7 +217,7 @@ async function checkAndPublishAutoNotice(){
       const autoUpdateNotice = {
         id: uid(),
         title: `Automated System Update (${CURRENT_BUILD_VERSION})`,
-        desc: 'Implemented strict global approval gatekeeping. Unapproved users are fundamentally blocked from initializing the app.',
+        desc: 'Ensured management and approval navigation links are visible for authorized In-Charge and Owner roles.',
         type: 'SYSTEM',
         time: Date.now()
       };
@@ -284,13 +284,12 @@ function renderAuthScreen(mode, errorMsg){
         const data = await res.json();
         if(!res.ok){ renderAuthScreen('login', data.error || 'Login failed.'); return; }
         
-        // Strict Login Gate
         const user = data.user;
         if(user && user.role !== 'owner') {
            const localApprovals = JSON.parse(localStorage.getItem('labtrack_approved_users') || '{}');
            const isLocallyApproved = localApprovals[user.id];
            
-           if(user.status !== 'approved' && !isLocallyApproved) {
+           if(user.status && user.status !== 'approved' && !isLocallyApproved) {
               renderAuthScreen('login', 'Your account is pending approval by your Lab In-Charge or Owner.');
               return;
            }
@@ -775,7 +774,7 @@ async function renderInventory(){
       confirmingRemove.add(b.dataset.remove);
       drawList();
     });
-    list.querySelectorAll('[data-cancel-remove]').forEach(b=> b.onclick = ()=>{
+    list.querySelectorAll('[data-cancel-remove]').forEach(b=> b.onclick = async ()=>{
       confirmingRemove.delete(b.dataset.cancelRemove);
       drawList();
     });
@@ -1021,7 +1020,7 @@ async function renderMaintenance(){
     `).join('');
     list.querySelectorAll('[data-resolve]').forEach(b=> b.onclick = async ()=>{
       if(!requireIncharge()) return;
-      const m = maintenance.find(x=>x.id===b.dataset.resolve);
+      const m = maintenance.find(x=>x.id==b.dataset.resolve);
       m.status='Resolved'; m.resolvedBy=profileName; m.resolvedAt=Date.now();
       const eq = equipment.find(x=>x.id===m.equipmentId);
       if(eq){ eq.condition='Good'; eq.availableQty = Math.min(eq.totalQty, eq.availableQty+1); }
@@ -1259,7 +1258,7 @@ async function lookupAndShow(tagOrId){
         <div style="margin-bottom:14px;">
           <div style="font-size:12px;font-weight:700;color:var(--ink-soft);text-transform:uppercase;letter-spacing:0.03em;margin-bottom:6px;">Currently checked out</div>
           <div style="font-size:13.5px;">${esc(activeCheckout.borrower)} · ×${activeCheckout.qty} · due ${fmtTime(activeCheckout.dueTime)}</div>
-        </div>` : `<div style="margin-bottom:14px;color:var(--ink-soft);font-size:13px;">Not currently checked out.</div>`}
+        </div>` : `<div style="margin-bottom:14px;color:var(--ink-soft);font-size:13.5px;">Not currently checked out.</div>`}
 
       ${openIssue ? `
         <div style="margin-bottom:14px;">
@@ -1337,7 +1336,6 @@ async function renderUsers(){
     return;
   }
 
-  // Load client-side persistent approval cache overrides to guarantee it never resets on refresh
   const localApprovals = JSON.parse(localStorage.getItem('labtrack_approved_users') || '{}');
   users.forEach(u => {
     if(localApprovals[u.id]) u.status = 'approved';
@@ -1378,7 +1376,6 @@ async function renderUsers(){
       const userId = b.dataset.approve;
       const targetUser = users.find(x => x.id === userId);
       
-      // Update local storage approval cache so it stays approved permanently across refreshes
       const currentCache = JSON.parse(localStorage.getItem('labtrack_approved_users') || '{}');
       currentCache[userId] = true;
       localStorage.setItem('labtrack_approved_users', JSON.stringify(currentCache));
