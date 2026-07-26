@@ -118,7 +118,7 @@ const KEYS = {
   clientVersion:'lab:client_version'
 };
 
-const CURRENT_BUILD_VERSION = 'v2.7.1-theme-pro';
+const CURRENT_BUILD_VERSION = 'v2.7.2-greeting-glow';
 
 function buildNav(){
   const nav = [
@@ -204,7 +204,7 @@ async function checkAndPublishAutoNotice(){
       const autoUpdateNotice = {
         id: uid(),
         title: `Automated System Update (${CURRENT_BUILD_VERSION})`,
-        desc: 'New personalized dynamic greeting and enhanced profile labels deployed live.',
+        desc: 'Enhanced personalized greeting banner with custom accent styling deployed live.',
         type: 'SYSTEM',
         time: Date.now()
       };
@@ -380,7 +380,7 @@ async function switchTab(tab){
 
 async function nextTag(){ tagCounter += 1; await storageSet(KEYS.tagCounter, String(tagCounter), true); return 'LAB-EQ-'+String(tagCounter).padStart(4,'0'); }
 
-/* ============ CLEAN DASHBOARD (HOME SCREEN) WITH DYNAMIC HI + USER NAME ============ */
+/* ============ CLEAN DASHBOARD (HOME SCREEN) WITH HIGHLIGHTED GREETING ============ */
 async function renderDashboard(){
   const main = document.getElementById('main');
   const userName = currentUser ? currentUser.fullName : 'User';
@@ -388,7 +388,14 @@ async function renderDashboard(){
   
   main.innerHTML = `
     <div class="clean-home-wrapper">
-      <div class="clean-home-title">Hii ${esc(userName)}</div>
+      <div class="clean-home-title" style="
+        background: linear-gradient(135deg, var(--accent) 0%, var(--ink) 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        text-shadow: 0 4px 20px rgba(36, 128, 107, 0.2);
+        letter-spacing: 0.02em;
+        margin-bottom: 6px;
+      ">Hii ${esc(userName)}</div>
       <div class="clean-home-subtitle">${esc(userDept)}</div>
       <div class="clean-home-hint">Click the top-left menu (☰) to access all tools and inventory.</div>
     </div>
