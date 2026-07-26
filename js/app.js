@@ -118,7 +118,7 @@ const KEYS = {
   clientVersion:'lab:client_version'
 };
 
-const CURRENT_BUILD_VERSION = 'v2.8.4-persistent-approval';
+const CURRENT_BUILD_VERSION = 'v2.8.5-global-approval-gate';
 
 function buildNav(){
   const nav = [
@@ -152,7 +152,13 @@ async function boot(){
     const data = await res.json();
     currentUser = data.user;
     
-    if(currentUser.status && currentUser.status !== 'approved' && currentUser.role !== 'owner'){
+    // Cross-check with local approval cache directly inside boot sequence
+    const localApprovals = JSON.parse(localStorage.getItem('labtrack_approved_users') || '{}');
+    if(localApprovals[currentUser.id]){
+       currentUser.status = 'approved';
+    }
+
+    if(currentUser.status !== 'approved' && currentUser.role !== 'owner'){
       doLogout(false);
       renderAuthScreen('login', 'Your account is pending approval by your Lab In-Charge or Owner.');
       return;
@@ -211,7 +217,7 @@ async function checkAndPublishAutoNotice(){
       const autoUpdateNotice = {
         id: uid(),
         title: `Automated System Update (${CURRENT_BUILD_VERSION})`,
-        desc: 'Enhanced account approval persistence and fallback synchronization.',
+        desc: 'Implemented strict global approval gatekeeping. Unapproved users are fundamentally blocked from initializing the app.',
         type: 'SYSTEM',
         time: Date.now()
       };
@@ -278,9 +284,16 @@ function renderAuthScreen(mode, errorMsg){
         const data = await res.json();
         if(!res.ok){ renderAuthScreen('login', data.error || 'Login failed.'); return; }
         
-        if(data.user && data.user.status && data.user.status !== 'approved' && data.user.role !== 'owner'){
-          renderAuthScreen('login', 'Your account is pending approval by your Lab In-Charge or Owner.');
-          return;
+        // Strict Login Gate
+        const user = data.user;
+        if(user && user.role !== 'owner') {
+           const localApprovals = JSON.parse(localStorage.getItem('labtrack_approved_users') || '{}');
+           const isLocallyApproved = localApprovals[user.id];
+           
+           if(user.status !== 'approved' && !isLocallyApproved) {
+              renderAuthScreen('login', 'Your account is pending approval by your Lab In-Charge or Owner.');
+              return;
+           }
         }
 
         authToken = data.token;
@@ -1008,7 +1021,7 @@ async function renderMaintenance(){
     `).join('');
     list.querySelectorAll('[data-resolve]').forEach(b=> b.onclick = async ()=>{
       if(!requireIncharge()) return;
-      const m = maintenance.find(x=>x.id==b.dataset.resolve);
+      const m = maintenance.find(x=>x.id===b.dataset.resolve);
       m.status='Resolved'; m.resolvedBy=profileName; m.resolvedAt=Date.now();
       const eq = equipment.find(x=>x.id===m.equipmentId);
       if(eq){ eq.condition='Good'; eq.availableQty = Math.min(eq.totalQty, eq.availableQty+1); }
