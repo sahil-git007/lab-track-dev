@@ -118,7 +118,7 @@ const KEYS = {
   clientVersion:'lab:client_version'
 };
 
-const CURRENT_BUILD_VERSION = 'v2.7.0-theme-pro';
+const CURRENT_BUILD_VERSION = 'v2.7.1-theme-pro';
 
 function buildNav(){
   const nav = [
@@ -204,7 +204,7 @@ async function checkAndPublishAutoNotice(){
       const autoUpdateNotice = {
         id: uid(),
         title: `Automated System Update (${CURRENT_BUILD_VERSION})`,
-        desc: 'New professional UI themes, dark/light mode switcher, and advanced change detection rules deployed live.',
+        desc: 'New personalized dynamic greeting and enhanced profile labels deployed live.',
         type: 'SYSTEM',
         time: Date.now()
       };
@@ -380,13 +380,16 @@ async function switchTab(tab){
 
 async function nextTag(){ tagCounter += 1; await storageSet(KEYS.tagCounter, String(tagCounter), true); return 'LAB-EQ-'+String(tagCounter).padStart(4,'0'); }
 
-/* ============ CLEAN DASHBOARD (HOME SCREEN) ============ */
+/* ============ CLEAN DASHBOARD (HOME SCREEN) WITH DYNAMIC HI + USER NAME ============ */
 async function renderDashboard(){
   const main = document.getElementById('main');
+  const userName = currentUser ? currentUser.fullName : 'User';
+  const userDept = currentUser && currentUser.department ? `${currentUser.department} DEPARTMENT` : 'CSE DEPARTMENT';
+  
   main.innerHTML = `
     <div class="clean-home-wrapper">
-      <div class="clean-home-title">SAHIL SAHOO</div>
-      <div class="clean-home-subtitle">CSE DEPARTMENT</div>
+      <div class="clean-home-title">Hii ${esc(userName)}</div>
+      <div class="clean-home-subtitle">${esc(userDept)}</div>
       <div class="clean-home-hint">Click the top-left menu (☰) to access all tools and inventory.</div>
     </div>
   `;
