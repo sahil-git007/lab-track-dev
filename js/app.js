@@ -118,7 +118,7 @@ const KEYS = {
   clientVersion:'lab:client_version'
 };
 
-const CURRENT_BUILD_VERSION = 'v2.7.2-greeting-glow';
+const CURRENT_BUILD_VERSION = 'v2.7.3-notice-fix';
 
 function buildNav(){
   const nav = [
@@ -204,7 +204,7 @@ async function checkAndPublishAutoNotice(){
       const autoUpdateNotice = {
         id: uid(),
         title: `Automated System Update (${CURRENT_BUILD_VERSION})`,
-        desc: 'Enhanced personalized greeting banner with custom accent styling deployed live.',
+        desc: 'Restored owner notice publishing panel and verified all interface views.',
         type: 'SYSTEM',
         time: Date.now()
       };
