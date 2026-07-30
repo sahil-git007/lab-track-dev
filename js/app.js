@@ -118,7 +118,7 @@ const KEYS = {
   clientVersion:'lab:client_version'
 };
 
-const CURRENT_BUILD_VERSION = 'v2.9.0-sidebar-toggle-fix';
+const CURRENT_BUILD_VERSION = 'v2.9.1-sidebar-fix';
 
 function buildNav(){
   const nav = [
@@ -216,28 +216,17 @@ function initGlobalSidebarHandlers(){
     
     if(!sb) return;
 
-    // If hamburger button is clicked, toggle open/close state directly
+    // Check if click is on hamburger button
     if(hamburgerBtn && (hamburgerBtn === e.target || hamburgerBtn.contains(e.target))){
       e.stopPropagation();
-      const isOpen = sb.classList.contains('open');
-      if(isOpen){
-        sb.classList.remove('open');
-        sb.style.transform = '';
-        sb.style.display = '';
-      } else {
-        sb.classList.add('open');
-        sb.style.transform = 'translateX(0)';
-        sb.style.display = 'flex';
-      }
+      sb.classList.toggle('open');
       return;
     }
 
-    // If click is outside sidebar and hamburger while sidebar is open, close it
+    // If sidebar is open and click is outside sidebar, close it
     if(sb.classList.contains('open')){
       if(!sb.contains(e.target)){
         sb.classList.remove('open');
-        sb.style.transform = '';
-        sb.style.display = '';
       }
     }
   });
@@ -251,7 +240,7 @@ async function checkAndPublishAutoNotice(){
       const autoUpdateNotice = {
         id: uid(),
         title: `Automated System Update (${CURRENT_BUILD_VERSION})`,
-        desc: 'Fixed hamburger sidebar toggle and close response handlers.',
+        desc: 'Refined sidebar event propagation to guarantee clean toggling and closing.',
         type: 'SYSTEM',
         time: Date.now()
       };
@@ -453,16 +442,12 @@ function renderSidebar(){
     closeBtn.onclick = (e)=>{
       e.stopPropagation();
       sb.classList.remove('open');
-      sb.style.transform = '';
-      sb.style.display = '';
     };
   }
 
   sb.querySelectorAll('.nav-item').forEach(el=> el.onclick = ()=>{
     switchTab(el.dataset.tab);
     sb.classList.remove('open');
-    sb.style.transform = '';
-    sb.style.display = '';
   });
 }
 
