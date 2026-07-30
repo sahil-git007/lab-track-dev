@@ -1,7 +1,7 @@
 /* ============ Auth + Storage (real backend, college-code scoped) ============ */
 const AUTH_KEY = 'labtrack_auth_token';
 let authToken = localStorage.getItem(AUTH_KEY) || null;
-let currentUser = null; // { id, fullName, collegeName, department, collegeCode, collegeEmail, username, role, status }
+let currentUser = null; // { id, fullName, collegeName, department, collegeCode, role, status }
 
 function authHeaders(extra={}){
   const h = { ...extra };
@@ -466,9 +466,16 @@ function renderAuthScreen(mode, errorMsg){
         });
         const data = await res.json();
         if(!res.ok){ renderAuthScreen('register', data.error || 'Registration failed.'); return; }
-        authToken = data.token;
-        localStorage.setItem(AUTH_KEY, authToken);
-        boot();
+        
+        card.innerHTML = `
+          <h2>Account Pending Approval</h2>
+          <p class="sub">Your account has been registered successfully with <strong>${esc(collegeEmail)}</strong> and is awaiting review by your Lab In-Charge or Owner.</p>
+          <div style="background:var(--paper);border:1px solid var(--grid);padding:14px;border-radius:8px;margin:16px 0;font-size:13.5px;color:var(--ink);">
+            Status: <strong style="color:var(--amber);">PENDING APPROVAL</strong>
+          </div>
+          <button class="btn btn-primary" id="backToLogin">Return to Sign In</button>
+        `;
+        document.getElementById('backToLogin').onclick = ()=> renderAuthScreen('login');
       }catch(e){ renderAuthScreen('register', 'Could not reach the server.'); }
     };
   }
@@ -986,7 +993,7 @@ async function renderCheckout(){
       </div>`;
     }).join('');
     list.querySelectorAll('[data-return]').forEach(b=> b.onclick = async ()=>{
-      const c = checkouts.find(x=>x.id===b.dataset.return);
+      const c = checkouts.find(x=>x.id==b.dataset.return);
       c.status='Returned'; c.returnTime=Date.now();
       const eq = equipment.find(x=>x.id===c.equipmentId);
       if(eq) eq.availableQty = Math.min(eq.totalQty, eq.availableQty + c.qty);
@@ -1096,7 +1103,7 @@ async function renderMaintenance(){
     `).join('');
     list.querySelectorAll('[data-resolve]').forEach(b=> b.onclick = async ()=>{
       if(!requireIncharge()) return;
-      const m = maintenance.find(x=>x.id===b.dataset.resolve);
+      const m = maintenance.find(x=>x.id==b.dataset.resolve);
       m.status='Resolved'; m.resolvedBy=profileName; m.resolvedAt=Date.now();
       const eq = equipment.find(x=>x.id===m.equipmentId);
       if(eq){ eq.condition='Good'; eq.availableQty = Math.min(eq.totalQty, eq.availableQty+1); }
