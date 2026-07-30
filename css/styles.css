@@ -76,7 +76,6 @@ body {
   transition: var(--theme-transition);
 }
 
-/* Reduced motion — honour OS preference */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;
@@ -85,7 +84,6 @@ body {
   }
 }
 
-/* Smooth Scrollbar */
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: var(--paper); }
 ::-webkit-scrollbar-thumb { background: var(--grid); border-radius: 4px; transition: background 0.3s ease; }
@@ -167,7 +165,6 @@ input, select, textarea { font-family: inherit; font-size: 14px; }
 
 .topbar-right { display: flex; align-items: center; gap: 10px; }
 
-/* Icon Buttons */
 .icon-btn {
   width: 38px;
   height: 38px;
@@ -200,7 +197,6 @@ input, select, textarea { font-family: inherit; font-size: 14px; }
   100% { transform: rotate(360deg) scale(1); }
 }
 
-/* Profile Pill */
 .profile-pill {
   background: var(--navy-light);
   border: 1px solid rgba(255, 255, 255, 0.15);
@@ -272,7 +268,6 @@ input, select, textarea { font-family: inherit; font-size: 14px; }
   }
 }
 
-/* Sidebar nav items */
 .nav-item {
   display: flex;
   align-items: center;
@@ -323,7 +318,6 @@ input, select, textarea { font-family: inherit; font-size: 14px; }
 }
 .nav-label-group:first-child { margin-top: 2px; }
 
-/* Mobile Backdrop */
 .sidebar-backdrop {
   display: none;
   position: fixed;
@@ -397,14 +391,12 @@ input, select, textarea { font-family: inherit; font-size: 14px; }
   box-shadow: var(--shadow-hover);
 }
 
-/* Staggered Entrance */
 .grid > *:nth-child(1) { animation-delay: 0.04s; }
 .grid > *:nth-child(2) { animation-delay: 0.09s; }
 .grid > *:nth-child(3) { animation-delay: 0.14s; }
 .grid > *:nth-child(4) { animation-delay: 0.19s; }
 .grid > *:nth-child(5) { animation-delay: 0.24s; }
 
-/* Stat Cards */
 .stat-card {
   display: flex;
   flex-direction: column;
@@ -536,7 +528,6 @@ input, select, textarea { font-family: inherit; font-size: 14px; }
 }
 .form-group input::placeholder { color: var(--ink-soft); opacity: 0.7; }
 
-/* Password eye toggle */
 .password-input-wrap { position: relative; display: flex; align-items: center; width: 100%; }
 .password-input-wrap input { padding-right: 44px; }
 .toggle-password-btn {
@@ -611,7 +602,6 @@ input, select, textarea { font-family: inherit; font-size: 14px; }
 
 .btn-sm { padding: 7px 14px; font-size: 12px; border-radius: 8px; }
 
-/* CTA Buttons */
 .btn-cta {
   background: linear-gradient(135deg, var(--teal) 0%, #0F4C40 100%);
   color: #FFFFFF;
@@ -666,7 +656,6 @@ input, select, textarea { font-family: inherit; font-size: 14px; }
 .badge-rust    { background: var(--rust-soft);  color: var(--rust);  }
 .badge-neutral { background: var(--grid);        color: var(--ink-soft); }
 
-/* Asset Tag Cards */
 .asset-tag {
   position: relative;
   background: var(--card);
@@ -685,7 +674,6 @@ input, select, textarea { font-family: inherit; font-size: 14px; }
   border-color: var(--accent);
 }
 
-/* Corner ticks */
 .asset-tag::before, .asset-tag::after,
 .asset-tag .tick-br, .asset-tag .tick-tr {
   content: '';
@@ -711,7 +699,7 @@ input, select, textarea { font-family: inherit; font-size: 14px; }
 .tag-body  { font-size: 13.5px; margin-top: 8px; line-height: 1.5; margin-left: 10px; margin-right: 6px; }
 
 /* ================================================================
-   BAR CHART ROWS (Dashboard)
+   BAR CHART ROWS
 ================================================================ */
 .bar-row {
   display: flex;
@@ -770,7 +758,7 @@ input, select, textarea { font-family: inherit; font-size: 14px; }
 }
 
 /* ================================================================
-   USER TABLE (Owner panel)
+   USER TABLE
 ================================================================ */
 .user-row {
   display: grid;
@@ -792,9 +780,6 @@ input, select, textarea { font-family: inherit; font-size: 14px; }
   font-family: 'IBM Plex Mono', monospace;
 }
 
-/* ================================================================
-   QR SLOT
-================================================================ */
 .qr-slot {
   margin-top: 8px;
   border-radius: 6px;
@@ -806,7 +791,7 @@ input, select, textarea { font-family: inherit; font-size: 14px; }
 .qr-slot:hover { opacity: 1; transform: scale(1.06); }
 
 /* ================================================================
-   AUTH MODAL — Glassmorphism upgrade
+   AUTH MODAL
 ================================================================ */
 .auth-overlay {
   position: fixed;
@@ -837,7 +822,6 @@ input, select, textarea { font-family: inherit; font-size: 14px; }
   position: relative;
   overflow: hidden;
 }
-/* Subtle top accent line */
 .auth-card::before {
   content: '';
   position: absolute;
@@ -869,7 +853,6 @@ input, select, textarea { font-family: inherit; font-size: 14px; }
   75%  { transform: translateX(7px); }
 }
 
-/* Auth Card Footer */
 .auth-card-footer {
   margin-top: 24px;
   padding-top: 20px;
@@ -887,7 +870,6 @@ input, select, textarea { font-family: inherit; font-size: 14px; }
   font-weight: 500;
 }
 
-/* Security Note Card */
 .security-note-card {
   margin-top: 18px;
   background: var(--teal-soft);
@@ -917,7 +899,7 @@ input, select, textarea { font-family: inherit; font-size: 14px; }
 }
 
 /* ================================================================
-   RESPONSIVE — MOBILE OPTIMISATION
+   RESPONSIVE & MOBILE SIDEBAR DRAWER STYLES
 ================================================================ */
 @media (max-width: 768px) {
   .hamburger-btn { display: flex; }
@@ -973,3 +955,4 @@ input, select, textarea { font-family: inherit; font-size: 14px; }
   .bar-label { width: 100px; }
   .profile-pill .tag-id { display: none; }
 }
+```[cite: 2]
