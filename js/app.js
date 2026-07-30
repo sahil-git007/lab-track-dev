@@ -1,7 +1,7 @@
 /* ============ Auth + Storage (real backend, college-code scoped) ============ */
 const AUTH_KEY = 'labtrack_auth_token';
 let authToken = localStorage.getItem(AUTH_KEY) || null;
-let currentUser = null; // { id, fullName, collegeName, department, collegeCode, role }
+let currentUser = null; // { id, fullName, collegeName, department, collegeCode, collegeEmail, username, role, status }
 
 function authHeaders(extra={}){
   const h = { ...extra };
@@ -365,8 +365,13 @@ function renderAuthScreen(mode, errorMsg){
       </div>
 
       <div class="form-group">
-        <label for="reUsername">Username or email</label>
-        <input id="reUsername" placeholder="e.g. aditi.sharma" />
+        <label for="reUsername">Username</label>
+        <input id="reUsername" placeholder="e.g. aditi_07" />
+      </div>
+
+      <div class="form-group">
+        <label for="reEmail">College Email Address</label>
+        <input id="reEmail" type="email" placeholder="e.g. aditi@college.edu" />
       </div>
 
       <div class="form-group">
@@ -435,19 +440,29 @@ function renderAuthScreen(mode, errorMsg){
     document.getElementById('toLogin').onclick = ()=> renderAuthScreen('login');
     document.getElementById('reSubmit').onclick = async ()=>{
       const fullName = document.getElementById('reName').value.trim();
+      const username = document.getElementById('reUsername').value.trim();
+      const collegeEmail = document.getElementById('reEmail').value.trim();
       const collegeName = document.getElementById('reCollege').value.trim();
       const department = document.getElementById('reDept').value.trim();
       const collegeCode = document.getElementById('reCollegeCode').value.trim();
-      const username = document.getElementById('reUsername').value.trim();
       const password = document.getElementById('rePassword').value;
-      if(!fullName||!collegeName||!department||!collegeCode||!username||!password){
-        renderAuthScreen('register', 'Fill in every field.'); return;
+
+      if(!fullName || !username || !collegeEmail || !collegeName || !department || !collegeCode || !password){
+        renderAuthScreen('register', 'All fields are required.'); 
+        return;
       }
-      if(password.length < 6){ renderAuthScreen('register', 'Password must be at least 6 characters.'); return; }
+      if(!collegeEmail.includes('@')){
+        renderAuthScreen('register', 'Enter a valid college email address.'); 
+        return;
+      }
+      if(password.length < 6){ 
+        renderAuthScreen('register', 'Password must be at least 6 characters.'); 
+        return; 
+      }
       try{
         const res = await fetch('/api/auth/register', {
           method:'POST', headers:{'Content-Type':'application/json'},
-          body: JSON.stringify({ fullName, collegeName, department, collegeCode, username, password })
+          body: JSON.stringify({ fullName, username, collegeEmail, collegeName, department, collegeCode, password })
         });
         const data = await res.json();
         if(!res.ok){ renderAuthScreen('register', data.error || 'Registration failed.'); return; }
