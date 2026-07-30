@@ -118,7 +118,7 @@ const KEYS = {
   clientVersion:'lab:client_version'
 };
 
-const CURRENT_BUILD_VERSION = 'v2.8.9-sidebar-close-fix';
+const CURRENT_BUILD_VERSION = 'v2.9.0-sidebar-toggle-fix';
 
 function buildNav(){
   const nav = [
@@ -144,7 +144,7 @@ function buildNav(){
 /* ============ Boot, Theme & Auto Version Check ============ */
 async function boot(){
   initThemeToggle();
-  initGlobalSidebarClose();
+  initGlobalSidebarHandlers();
 
   if(!authToken){ renderAuthScreen('login'); return; }
   try{
@@ -209,13 +209,35 @@ function initThemeToggle(){
   }
 }
 
-function initGlobalSidebarClose(){
+function initGlobalSidebarHandlers(){
   document.addEventListener('click', (e)=>{
     const sb = document.getElementById('sidebar');
     const hamburgerBtn = document.getElementById('hamburgerToggle');
-    if(sb && sb.classList.contains('open')){
-      if(!sb.contains(e.target) && (!hamburgerBtn || !hamburgerBtn.contains(e.target))){
+    
+    if(!sb) return;
+
+    // If hamburger button is clicked, toggle open/close state directly
+    if(hamburgerBtn && (hamburgerBtn === e.target || hamburgerBtn.contains(e.target))){
+      e.stopPropagation();
+      const isOpen = sb.classList.contains('open');
+      if(isOpen){
         sb.classList.remove('open');
+        sb.style.transform = '';
+        sb.style.display = '';
+      } else {
+        sb.classList.add('open');
+        sb.style.transform = 'translateX(0)';
+        sb.style.display = 'flex';
+      }
+      return;
+    }
+
+    // If click is outside sidebar and hamburger while sidebar is open, close it
+    if(sb.classList.contains('open')){
+      if(!sb.contains(e.target)){
+        sb.classList.remove('open');
+        sb.style.transform = '';
+        sb.style.display = '';
       }
     }
   });
@@ -229,7 +251,7 @@ async function checkAndPublishAutoNotice(){
       const autoUpdateNotice = {
         id: uid(),
         title: `Automated System Update (${CURRENT_BUILD_VERSION})`,
-        desc: 'Enhanced sidebar navigation drawer responsiveness with robust outside-click and close button closing handlers.',
+        desc: 'Fixed hamburger sidebar toggle and close response handlers.',
         type: 'SYSTEM',
         time: Date.now()
       };
@@ -431,12 +453,16 @@ function renderSidebar(){
     closeBtn.onclick = (e)=>{
       e.stopPropagation();
       sb.classList.remove('open');
+      sb.style.transform = '';
+      sb.style.display = '';
     };
   }
 
   sb.querySelectorAll('.nav-item').forEach(el=> el.onclick = ()=>{
     switchTab(el.dataset.tab);
     sb.classList.remove('open');
+    sb.style.transform = '';
+    sb.style.display = '';
   });
 }
 
@@ -481,13 +507,6 @@ async function renderDashboard(){
     hamburger.className = 'hamburger-btn';
     hamburger.innerHTML = '☰';
     brand.insertBefore(hamburger, brand.firstChild);
-  }
-  if(hamburger){
-    hamburger.onclick = (e)=>{
-      e.stopPropagation();
-      const sb = document.getElementById('sidebar');
-      if(sb) sb.classList.toggle('open');
-    };
   }
 }
 
