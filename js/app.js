@@ -61,31 +61,34 @@ function renderQR(elId, text, size){
 /* ============ Global state ============ */
 let profileName = null;
 let profileRole = 'student'; // 'student' | 'incharge' | 'owner'
-let currentTab = 'dashboard';
+let currentTab = 'home';
 let tagCounter = 1;
 
 const KEYS = {
   equipment:'lab:equipment',
   checkouts:'lab:checkouts',
   maintenance:'lab:maintenance',
-  tagCounter:'lab:tagCounter'
+  tagCounter:'lab:tagCounter',
+  notices:'lab:notices'
 };
 
 function buildNav(){
   const nav = [
-    {group:'Overview', items:[{id:'dashboard', label:'Dashboard', icon:'&#9635;'}]},
+    {group:'Home',     items:[{id:'home',     label:'Home Screen',       icon:'&#8962;'}]},
+    {group:'Updates',  items:[{id:'notices',  label:'Notices & Updates', icon:'&#128276;'}]},
+    {group:'Overview', items:[{id:'dashboard',label:'Dashboard',         icon:'&#9635;'}]},
     {group:'Inventory', items:[
       {id:'inventory', label:'Equipment', icon:'&#9881;'},
-      {id:'scan', label:'Scan QR', icon:'&#128247;'},
+      {id:'scan',      label:'Scan QR',   icon:'&#128247;'},
     ]},
     {group:'Activity', items:[
       {id:'checkout', label:'Checkout / Return', icon:'&#8646;'},
-      {id:'usage', label:'Usage Log', icon:'&#128203;'},
+      {id:'usage',    label:'Usage Log',         icon:'&#128203;'},
     ]},
     {group:'Upkeep', items:[{id:'maintenance', label:'Maintenance', icon:'&#128295;'}]},
   ];
-  if(profileRole==='owner'){
-    nav.push({group:'Owner', items:[{id:'users', label:'Manage Users', icon:'&#128100;'}]});
+  if(profileRole==='incharge' || profileRole==='owner'){
+    nav.push({group:'Management', items:[{id:'users', label:'Manage Users & Approvals', icon:'&#128100;'}]});
   }
   return nav;
 }
@@ -186,7 +189,7 @@ async function boot(){
   tagCounter = parseInt(await storageGet(KEYS.tagCounter, true)) || 1;
   renderProfileBox();
   renderSidebar();
-  await switchTab('dashboard');
+  await switchTab('home');
 }
 
 function doLogout(redraw=true){
@@ -489,16 +492,10 @@ function renderSidebar(){
   if(closeBtn){
     closeBtn.onclick = (e)=>{
       e.stopPropagation();
-      // THE FIX: check screen size before choosing which class to use
-      if(window.innerWidth <= 768){
-        // Mobile: slide sidebar back off-screen and hide backdrop
-        sb.classList.remove('sidebar-open');
-        const backdrop = document.getElementById('sidebarBackdrop');
-        if(backdrop) backdrop.classList.remove('active');
-      } else {
-        // Desktop: collapse sidebar with margin animation
-        sb.classList.add('sidebar-collapsed');
-      }
+      sb.classList.remove('sidebar-open');
+      sb.classList.add('sidebar-collapsed');
+      const backdrop = document.getElementById('sidebarBackdrop');
+      if(backdrop) backdrop.classList.remove('active');
     };
   }
 }
@@ -515,11 +512,168 @@ async function switchTab(tab){
   renderSidebar();
   const main = document.getElementById('main');
   main.innerHTML = `<div class="loading-note">Loading ${tab}…</div>`;
-  const renderers = { dashboard:renderDashboard, inventory:renderInventory, checkout:renderCheckout, usage:renderUsage, maintenance:renderMaintenance, scan:renderScan, users:renderUsers };
-  await renderers[tab]();
+  const renderers = {
+    home:renderHome,
+    notices:renderNotices,
+    dashboard:renderDashboard,
+    inventory:renderInventory,
+    checkout:renderCheckout,
+    usage:renderUsage,
+    maintenance:renderMaintenance,
+    scan:renderScan,
+    users:renderUsers
+  };
+  if(renderers[tab]) await renderers[tab]();
 }
 
 async function nextTag(){ tagCounter += 1; await storageSet(KEYS.tagCounter, String(tagCounter), true); return 'LAB-EQ-'+String(tagCounter).padStart(4,'0'); }
+
+/* ============ HOME SCREEN ============ */
+async function renderHome(){
+  const [equipment, checkouts, maintenance] = await Promise.all([
+    loadList(KEYS.equipment, true), loadList(KEYS.checkouts, true), loadList(KEYS.maintenance, true)
+  ]);
+  const now = Date.now();
+  const active = checkouts.filter(c=>c.status==='Active').length;
+  const overdue = checkouts.filter(c=>c.status==='Active' && c.dueTime && c.dueTime < now).length;
+  const openMaint = maintenance.filter(m=>m.status==='Open').length;
+  const totalEq = equipment.length;
+  const greeting = ()=>{
+    const h = new Date().getHours();
+    if(h < 12) return 'Good morning';
+    if(h < 17) return 'Good afternoon';
+    return 'Good evening';
+  };
+  const main = document.getElementById('main');
+  main.innerHTML = `
+    <div class="module-head" style="margin-bottom:28px;">
+      <h2>${greeting()}, ${esc(profileName ? profileName.split(' ')[0] : 'there')} 👋</h2>
+      <p>Here's what's happening in the lab right now.</p>
+    </div>
+    <div class="grid grid-3" style="margin-bottom:24px;">
+      <div class="card stat-card ok" style="cursor:pointer;" onclick="switchTab('inventory')">
+        <div class="num">${totalEq}</div>
+        <div class="lbl">Equipment types tracked</div>
+      </div>
+      <div class="card stat-card ${active>0?'warn':''}" style="cursor:pointer;" onclick="switchTab('checkout')">
+        <div class="num">${active}</div>
+        <div class="lbl">Items checked out</div>
+      </div>
+      <div class="card stat-card ${overdue>0?'alert':''}" style="cursor:pointer;" onclick="switchTab('checkout')">
+        <div class="num">${overdue}</div>
+        <div class="lbl">Overdue returns</div>
+      </div>
+    </div>
+    <div class="grid grid-2" style="align-items:start;">
+      <div class="panel">
+        <h3>Quick actions</h3>
+        <div style="display:flex;flex-direction:column;gap:10px;">
+          <button class="btn btn-primary" onclick="switchTab('checkout')" style="justify-content:flex-start;gap:12px;">
+            &#8646; Checkout / Return equipment
+          </button>
+          <button class="btn" onclick="switchTab('inventory')" style="justify-content:flex-start;gap:12px;">
+            &#9881; Browse equipment inventory
+          </button>
+          <button class="btn" onclick="switchTab('scan')" style="justify-content:flex-start;gap:12px;">
+            &#128247; Scan a QR tag
+          </button>
+          <button class="btn" onclick="switchTab('notices')" style="justify-content:flex-start;gap:12px;">
+            &#128276; View notices &amp; updates
+          </button>
+        </div>
+      </div>
+      <div class="panel">
+        <h3>Lab health</h3>
+        ${openMaint > 0
+          ? `<div style="margin-bottom:12px;"><span class="badge badge-warn">${openMaint} open maintenance report${openMaint===1?'':'s'}</span><br/><span style="font-size:12.5px;color:var(--ink-soft);margin-top:4px;display:block;">Some equipment may be unavailable.</span></div>`
+          : `<div style="margin-bottom:12px;"><span class="badge badge-ok">All equipment healthy</span><br/><span style="font-size:12.5px;color:var(--ink-soft);margin-top:4px;display:block;">No open maintenance reports.</span></div>`}
+        ${overdue > 0
+          ? `<div><span class="badge badge-rust">${overdue} overdue return${overdue===1?'':'s'}</span><br/><span style="font-size:12.5px;color:var(--ink-soft);margin-top:4px;display:block;">Follow up with borrowers.</span></div>`
+          : `<div><span class="badge badge-ok">No overdue returns</span></div>`}
+      </div>
+    </div>
+  `;
+}
+
+/* ============ NOTICES & UPDATES ============ */
+async function renderNotices(){
+  const isIncharge = profileRole==='incharge' || profileRole==='owner';
+  let notices = await loadList(KEYS.notices, true);
+  const main = document.getElementById('main');
+  main.innerHTML = `
+    <div class="module-head">
+      <h2>Notices &amp; Updates</h2>
+      <p>Lab announcements, maintenance alerts, and important notices for all users.</p>
+    </div>
+    ${isIncharge ? `
+    <div class="panel" style="margin-bottom:20px;">
+      <h3>Post a new notice</h3>
+      <div class="form-group" style="margin-bottom:12px;">
+        <label>Title</label>
+        <input id="ntTitle" placeholder="e.g. Lab closed on Friday" />
+      </div>
+      <div class="form-group" style="margin-bottom:12px;">
+        <label>Message</label>
+        <textarea id="ntBody" placeholder="Write the notice content here…" style="min-height:90px;"></textarea>
+      </div>
+      <div style="display:flex;gap:10px;align-items:center;">
+        <select id="ntType" style="padding:9px 13px;border:1px solid var(--grid);border-radius:9px;background:var(--input-bg);color:var(--ink);font-size:13.5px;">
+          <option value="info">ℹ️ Info</option>
+          <option value="warn">⚠️ Warning</option>
+          <option value="alert">🔴 Alert</option>
+          <option value="ok">✅ Update</option>
+        </select>
+        <button class="btn btn-primary" id="ntSubmit">Post notice</button>
+      </div>
+    </div>
+    ` : ''}
+    <div id="ntList"></div>
+  `;
+  if(isIncharge){
+    document.getElementById('ntSubmit').onclick = async ()=>{
+      const title = document.getElementById('ntTitle').value.trim();
+      const body  = document.getElementById('ntBody').value.trim();
+      const type  = document.getElementById('ntType').value;
+      if(!title || !body){ showToast('Fill in title and message.','warn'); return; }
+      notices.unshift({ id:uid(), title, body, type, postedBy:profileName, timestamp:Date.now() });
+      const ok = await saveList(KEYS.notices, notices, true);
+      if(!ok){ showToast('Could not save notice.','error'); return; }
+      showToast('Notice posted.','ok');
+      renderNotices();
+    };
+  }
+  const list = document.getElementById('ntList');
+  if(!notices.length){
+    list.innerHTML = `<div class="empty">No notices posted yet. Check back later.</div>`;
+    return;
+  }
+  const typeIcon = {info:'ℹ️', warn:'⚠️', alert:'🔴', ok:'✅'};
+  const typeBadge = {info:'badge-neutral', warn:'badge-warn', alert:'badge-rust', ok:'badge-ok'};
+  list.innerHTML = notices.map(n=>`
+    <div class="card" style="margin-bottom:14px;padding:18px 22px;">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:8px;">
+        <div style="display:flex;align-items:center;gap:10px;">
+          <span style="font-size:20px;">${typeIcon[n.type]||'ℹ️'}</span>
+          <strong style="font-size:15px;">${esc(n.title)}</strong>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
+          <span class="badge ${typeBadge[n.type]||'badge-neutral'}">${n.type||'info'}</span>
+          ${isIncharge ? `<button class="btn btn-sm" style="color:var(--rust);border-color:var(--rust-soft);" data-delete-notice="${n.id}">Remove</button>` : ''}
+        </div>
+      </div>
+      <p style="margin:0 0 8px;font-size:13.5px;line-height:1.6;color:var(--ink);">${esc(n.body)}</p>
+      <span style="font-size:11.5px;color:var(--ink-soft);">Posted by ${esc(n.postedBy)} · ${fmtTime(n.timestamp)}</span>
+    </div>
+  `).join('');
+  if(isIncharge){
+    list.querySelectorAll('[data-delete-notice]').forEach(b=> b.onclick = async ()=>{
+      notices = notices.filter(n=>n.id!==b.dataset.deleteNotice);
+      await saveList(KEYS.notices, notices, true);
+      showToast('Notice removed.','ok');
+      renderNotices();
+    });
+  }
+}
 
 /* ============ DASHBOARD ============ */
 async function renderDashboard(){
@@ -549,8 +703,8 @@ async function renderDashboard(){
       <div class="card stat-card"><div class="num">${equipment.length}</div><div class="lbl">Equipment types</div></div>
       <div class="card stat-card ok"><div class="num">${availableUnits}/${totalUnits}</div><div class="lbl">Units available</div></div>
       <div class="card stat-card"><div class="num">${activeCheckouts.length}</div><div class="lbl">Checked out now</div></div>
-      <div class="card stat-card ${overdue.length? 'alert':''}"><div class="num">${overdue.length}</div><div class="lbl">Overdue returns</div></div>
-      <div class="card stat-card ${underMaint? 'warn':''}"><div class="num">${underMaint}</div><div class="lbl">Under maintenance</div></div>
+      <div class="card stat-card ${overdue.length?'alert':''}"><div class="num">${overdue.length}</div><div class="lbl">Overdue returns</div></div>
+      <div class="card stat-card ${underMaint?'warn':''}"><div class="num">${underMaint}</div><div class="lbl">Under maintenance</div></div>
     </div>
     <div class="grid grid-2" style="align-items:start;">
       <div class="panel">
@@ -626,6 +780,8 @@ async function renderInventory(){
       showToast(`${name} added as ${tag}.`, 'ok');
       renderInventory();
     };
+  } else {
+    document.getElementById('becomeIncharge').onclick = ()=> promptProfile(true);
   }
   const catSel = document.getElementById('eqFilterCat');
   [...new Set(equipment.map(e=>e.category))].forEach(c=>{
@@ -991,7 +1147,7 @@ async function startCamera(){
     return;
   }
   if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
-    statusEl.textContent = 'This browser/context has no camera API available — use manual lookup instead.';
+    statusEl.textContent = 'This browser/context has no camera API available (camera also requires HTTPS or localhost) — use manual lookup instead.';
     return;
   }
   startBtn.disabled = true;
@@ -1005,7 +1161,7 @@ async function startCamera(){
       startBtn.disabled = false;
       const msg = (e2 && (e2.name==='NotAllowedError'))
         ? 'Camera permission was denied — allow camera access in your browser settings, or use manual lookup below.'
-        : 'Camera could not be started — use manual lookup below.';
+        : 'Camera could not be started, which is common inside embedded previews. Try opening this file directly in a browser tab, or use manual lookup below.';
       statusEl.textContent = msg;
       return;
     }
@@ -1017,7 +1173,8 @@ async function startCamera(){
   video.srcObject = scanStream;
   video.style.display = 'block';
   placeholder.style.display = 'none';
-  try{ await video.play(); }catch(e){ /* auto-play */ }
+  try{ await video.play(); }
+  catch(e){ /* safe to ignore */ }
   statusEl.textContent = 'Scanning…';
   const ctx = canvas.getContext('2d', { willReadFrequently:true });
   let sized = false;
@@ -1061,6 +1218,7 @@ async function lookupAndShow(tagOrId){
   const activeCheckout = checkouts.find(c=>c.equipmentId===eq.id && c.status==='Active');
   const recentUsage = checkouts.filter(c=>c.equipmentId===eq.id).sort((a,b)=>b.checkoutTime-a.checkoutTime).slice(0,4);
   const openIssue = maintenance.find(m=>m.equipmentId===eq.id && m.status==='Open');
+
   resultEl.innerHTML = `
     <div class="panel">
       <h3>Result</h3>
@@ -1080,16 +1238,19 @@ async function lookupAndShow(tagOrId){
           <div style="margin-top:4px;color:var(--ink-soft);">Registered by ${esc(eq.addedBy)} · ${fmtDate(eq.timestamp)}</div>
         </div>
       </div>
+
       ${activeCheckout ? `
         <div style="margin-bottom:14px;">
           <div style="font-size:12px;font-weight:700;color:var(--ink-soft);text-transform:uppercase;letter-spacing:0.03em;margin-bottom:6px;">Currently checked out</div>
           <div style="font-size:13.5px;">${esc(activeCheckout.borrower)} · ×${activeCheckout.qty} · due ${fmtTime(activeCheckout.dueTime)}</div>
         </div>` : `<div style="margin-bottom:14px;color:var(--ink-soft);font-size:13px;">Not currently checked out.</div>`}
+
       ${openIssue ? `
         <div style="margin-bottom:14px;">
           <span class="badge badge-rust">Open maintenance report</span>
           <div style="font-size:13.5px;margin-top:6px;">${esc(openIssue.issue)}</div>
         </div>` : ''}
+
       <div>
         <div style="font-size:12px;font-weight:700;color:var(--ink-soft);text-transform:uppercase;letter-spacing:0.03em;margin-bottom:6px;">Recent usage</div>
         ${recentUsage.length ? recentUsage.map(c=>`
@@ -1097,6 +1258,7 @@ async function lookupAndShow(tagOrId){
             ${esc(c.borrower)} · ${fmtDate(c.checkoutTime)} · <span class="badge ${c.status==='Returned'?'badge-ok':'badge-warn'}">${c.status}</span>
           </div>`).join('') : `<div style="font-size:12.5px;color:var(--ink-soft);">No checkout history yet.</div>`}
       </div>
+
       <div style="display:flex;gap:8px;margin-top:14px;">
         <button class="btn btn-sm" data-go="checkout">Go to Checkout / Return</button>
         <button class="btn btn-sm" data-go="maintenance">Report an issue</button>
@@ -1106,16 +1268,16 @@ async function lookupAndShow(tagOrId){
   resultEl.querySelectorAll('[data-go]').forEach(b=> b.onclick = ()=> switchTab(b.dataset.go));
 }
 
-/* ============ OWNER: MANAGE USERS ============ */
+/* ============ MANAGE USERS & APPROVALS ============ */
 async function renderUsers(){
   const main = document.getElementById('main');
-  if(profileRole!=='owner'){
-    main.innerHTML = `<div class="empty">This section is only available to the Owner account.</div>`;
+  if(profileRole!=='owner' && profileRole!=='incharge'){
+    main.innerHTML = `<div class="empty">This section is only available to Lab In-Charge and Owner accounts.</div>`;
     return;
   }
   main.innerHTML = `
     <div class="module-head">
-      <h2>Manage Users</h2>
+      <h2>Manage Users &amp; Approvals</h2>
       <p>Every registered account, across every college code. Promote a Student to Lab In-Charge, or remove an account entirely.</p>
     </div>
     <div class="panel">
