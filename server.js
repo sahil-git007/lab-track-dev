@@ -1,92 +1,90 @@
 /**
- * LabTrack — Backend Server with MongoDB Support + Local Fallback
+ * LabTrack — backend server
  *
- * Multi-Tenancy: Every user registers with a collegeCode. All shared
- * data (equipment, checkouts, maintenance) is namespaced by collegeCode.
+ * Real authentication (no third-party auth service needed) + a tiny
+ * key-value storage API, both persisted to MongoDB Atlas or data/db.json.
  *
- * Database:
- *   - If MONGODB_URI or MONGO_URI env var is set, uses MongoDB Atlas / Mongoose.
- *   - If no MONGODB_URI is set, falls back gracefully to data/db.json file storage.
+ * Multi-tenancy: every user registers with a collegeCode. All "shared"
+ * data (equipment, checkouts, maintenance) is namespaced by the logged-in
+ * user's collegeCode, so different colleges never see each other's records.
  */
 const express = require('express');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
-const mongoose = require('mongoose');
+const { MongoClient } = require('mongodb');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const DB_FILE = path.join(__dirname, 'data', 'db.json');
+const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
-app.use(express.static(__dirname));
+app.use(express.static(path.join(__dirname, '.')));
 
-/* ---------- MongoDB Mongoose Schemas ---------- */
-const UserSchema = new mongoose.Schema({
-  id: { type: String, required: true, unique: true },
-  fullName: String,
-  collegeName: String,
-  department: String,
-  collegeCode: String,
-  username: String,
-  passwordHash: String,
-  role: { type: String, default: 'student' },
-  createdAt: { type: Date, default: Date.now }
-});
+/* ---------- storage layer ---------- */
+let storageMode = 'file';
+let mongoCollection = null;
 
-const StorageSchema = new mongoose.Schema({
-  namespace: { type: String, required: true },
-  key: { type: String, required: true },
-  value: mongoose.Schema.Types.Mixed
-}, { timestamps: true });
-StorageSchema.index({ namespace: 1, key: 1 }, { unique: true });
-
-const SessionSchema = new mongoose.Schema({
-  token: { type: String, required: true, unique: true },
-  userId: String,
-  expiresAt: Number
-});
-
-const MongoUser = mongoose.model('User', UserSchema);
-const MongoStorage = mongoose.model('Storage', StorageSchema);
-const MongoSession = mongoose.model('Session', SessionSchema);
-
-let isMongoConnected = false;
-const MONGODB_URI = process.env.MONGODB_URI || process.env.MONGO_URI;
-
-if (MONGODB_URI) {
-  mongoose.connect(MONGODB_URI)
-    .then(() => {
-      isMongoConnected = true;
-      console.log('[LabTrack] Connected to MongoDB Database successfully!');
-      ensureOwnerMongo();
-    })
-    .catch(err => {
-      console.error('[LabTrack] MongoDB connection error:', err.message);
-      console.log('[LabTrack] Falling back to local data/db.json storage.');
-    });
-} else {
-  console.log('[LabTrack] MONGODB_URI env variable not set. Running with local data/db.json storage.');
+async function initStorage(){
+  const uri = process.env.MONGODB_URI;
+  if(!uri){
+    console.warn('\n[LabTrack] No MONGODB_URI set — using the local JSON file.');
+    console.warn('[LabTrack] This means all data will be LOST on every restart/redeploy on Render.');
+    console.warn('[LabTrack] Set MONGODB_URI (see README) before deploying for real.\n');
+    storageMode = 'file';
+    return;
+  }
+  try{
+    const client = new MongoClient(uri);
+    await client.connect();
+    const dbName = process.env.MONGODB_DB || 'labtrack';
+    mongoCollection = client.db(dbName).collection('state');
+    storageMode = 'mongo';
+    console.log('[LabTrack] Connected to MongoDB — data will persist across restarts.');
+  }catch(e){
+    console.error('[LabTrack] Failed to connect to MongoDB, falling back to the local file (data will NOT persist):', e.message);
+    storageMode = 'file';
+  }
 }
 
-/* ---------- Local JSON file fallback ---------- */
-function readDB(){
+function readDBFile(){
   try{
     if(!fs.existsSync(DB_FILE)) return { users:[], sessions:{}, storage:{} };
     const raw = fs.readFileSync(DB_FILE, 'utf-8');
     const parsed = raw ? JSON.parse(raw) : {};
     return { users: parsed.users||[], sessions: parsed.sessions||{}, storage: parsed.storage||{} };
   }catch(e){
+    console.error('Failed to read db.json, starting fresh:', e.message);
     return { users:[], sessions:{}, storage:{} };
   }
 }
-function writeDB(db){
+function writeDBFile(db){
   fs.mkdirSync(path.dirname(DB_FILE), { recursive:true });
   fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2));
 }
 
-/* ---------- Password Hashing ---------- */
+async function readDB(){
+  if(storageMode==='mongo'){
+    const doc = await mongoCollection.findOne({ _id:'main' });
+    if(!doc) return { users:[], sessions:{}, storage:{} };
+    return { users: doc.users||[], sessions: doc.sessions||{}, storage: doc.storage||{} };
+  }
+  return readDBFile();
+}
+async function writeDB(db){
+  if(storageMode==='mongo'){
+    await mongoCollection.replaceOne(
+      { _id:'main' },
+      { _id:'main', users: db.users, sessions: db.sessions, storage: db.storage },
+      { upsert:true }
+    );
+    return;
+  }
+  writeDBFile(db);
+}
+
+/* ---------- password hashing ---------- */
 function hashPassword(password){
   const salt = crypto.randomBytes(16).toString('hex');
   const hash = crypto.scryptSync(password, salt, 64).toString('hex');
@@ -99,200 +97,133 @@ function verifyPassword(password, stored){
 }
 function newToken(){ return crypto.randomBytes(32).toString('hex'); }
 function publicUser(u){
-  const { passwordHash, _id, __v, ...rest } = u.toObject ? u.toObject() : u;
+  const { passwordHash, ...rest } = u;
   return rest;
 }
 
-/* ---------- Seed System Owner ---------- */
-async function ensureOwnerMongo(){
-  try {
-    const existing = await MongoUser.findOne({ role: 'owner' });
-    if (existing) return;
-    const username = process.env.OWNER_USERNAME || 'owner';
-    const password = process.env.OWNER_PASSWORD || 'changeme123';
-    await MongoUser.create({
-      id: crypto.randomUUID(),
-      fullName: 'System Owner',
-      collegeName: 'LabTrack Administration',
-      department: 'Administration',
-      collegeCode: 'OWNER',
-      username,
-      passwordHash: hashPassword(password),
-      role: 'owner'
-    });
-    console.log('[LabTrack] System Owner account initialized in MongoDB.');
-  } catch (e) {
-    console.error('[LabTrack] Error seeding owner in MongoDB:', e.message);
-  }
-}
-
-function ensureOwnerFile(){
-  const db = readDB();
+/* ---------- seed the Owner account on first run ---------- */
+async function ensureOwner(){
+  const db = await readDB();
   if(db.users.some(u=>u.role==='owner')) return;
   const username = process.env.OWNER_USERNAME || 'owner';
   const password = process.env.OWNER_PASSWORD || 'changeme123';
+  if(!process.env.OWNER_PASSWORD){
+    console.warn('\n[LabTrack] No OWNER_PASSWORD set — using an insecure default owner login.');
+    console.warn(`[LabTrack] Username: ${username}  Password: ${password}`);
+    console.warn('[LabTrack] Set OWNER_USERNAME and OWNER_PASSWORD env vars and restart before deploying for real.\n');
+  }
   db.users.push({
     id: crypto.randomUUID(),
     fullName: 'System Owner',
     collegeName: 'LabTrack Administration',
     department: 'Administration',
-    collegeCode: 'OWNER',
+    collegeCode: 'GHRCEN', 
     username,
     passwordHash: hashPassword(password),
     role: 'owner',
     createdAt: Date.now()
   });
-  writeDB(db);
+  await writeDB(db);
 }
-ensureOwnerFile();
 
-/* ---------- Auth Middleware ---------- */
+/* ---------- auth middleware ---------- */
 async function requireAuth(req, res, next){
-  const authHeader = req.headers.authorization || '';
-  const token = authHeader.replace(/^Bearer\s+/i, '').trim();
-  if(!token) return res.status(401).json({ error: 'Unauthenticated' });
-
-  if(isMongoConnected){
-    try{
-      const session = await MongoSession.findOne({ token });
-      if(!session || session.expiresAt < Date.now()){
-        if(session) await MongoSession.deleteOne({ token });
-        return res.status(401).json({ error: 'Session expired' });
-      }
-      const user = await MongoUser.findOne({ id: session.userId });
-      if(!user) return res.status(401).json({ error: 'User no longer exists' });
-      req.user = user;
-      req.token = token;
-      return next();
-    }catch(e){
-      return res.status(500).json({ error: 'Database authentication error' });
-    }
-  } else {
-    const db = readDB();
+  try{
+    const header = req.header('Authorization') || '';
+    const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+    if(!token) return res.status(401).json({ error:'Not authenticated' });
+    const db = await readDB();
     const session = db.sessions[token];
-    if(!session || session.expiresAt < Date.now()){
-      if(session) delete db.sessions[token];
-      writeDB(db);
-      return res.status(401).json({ error: 'Session expired' });
-    }
-    const user = db.users.find(u => u.id === session.userId);
-    if(!user) return res.status(401).json({ error: 'User no longer exists' });
-    req.user = user;
-    req.token = token;
+    if(!session || session.expiresAt < Date.now()) return res.status(401).json({ error:'Session expired' });
+    const user = db.users.find(u=>u.id===session.userId);
+    if(!user) return res.status(401).json({ error:'User no longer exists' });
     req.db = db;
+    req.token = token;
+    req.user = user;
     next();
+  }catch(e){
+    console.error('Auth check failed:', e);
+    res.status(500).json({ error:'Server error during authentication.' });
   }
 }
-
 function requireOwner(req, res, next){
-  requireAuth(req, res, () => {
-    if(req.user.role !== 'owner') return res.status(403).json({ error: 'Owner role required' });
-    next();
-  });
+  if(req.user.role!=='owner') return res.status(403).json({ error:'Owner only' });
+  next();
 }
 
-/* ---------- Auth Routes ---------- */
+/* ---------- auth routes ---------- */
 app.post('/api/auth/register', async (req, res) => {
-  const { fullName, collegeName, department, collegeCode, username, password } = req.body || {};
-  if(!fullName || !collegeName || !department || !collegeCode || !username || !password){
-    return res.status(400).json({ error: 'All fields are required' });
-  }
-  if(password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters' });
-
-  const codeClean = collegeCode.trim().toUpperCase();
-  const userClean = username.trim().toLowerCase();
-
-  if(isMongoConnected){
-    try{
-      const exists = await MongoUser.findOne({ collegeCode: codeClean, username: userClean });
-      if(exists) return res.status(400).json({ error: 'Username already registered for this college code' });
-
-      const newUser = await MongoUser.create({
-        id: crypto.randomUUID(),
-        fullName: fullName.trim(),
-        collegeName: collegeName.trim(),
-        department: department.trim(),
-        collegeCode: codeClean,
-        username: userClean,
-        passwordHash: hashPassword(password),
-        role: 'student'
-      });
-
-      const token = newToken();
-      await MongoSession.create({ token, userId: newUser.id, expiresAt: Date.now() + (7 * 24 * 60 * 60 * 1000) });
-      return res.json({ token, user: publicUser(newUser) });
-    }catch(e){
-      return res.status(500).json({ error: 'Failed to create user in MongoDB' });
+  try{
+    const { fullName, collegeName, department, collegeCode, username, password } = req.body || {};
+    if(!fullName || !collegeName || !department || !collegeCode || !username || !password){
+      return res.status(400).json({ error:'All fields are required.' });
     }
-  } else {
-    const db = readDB();
-    const exists = db.users.some(u => u.collegeCode === codeClean && u.username.toLowerCase() === userClean);
-    if(exists) return res.status(400).json({ error: 'Username already registered for this college code' });
+    if(password.length < 6) return res.status(400).json({ error:'Password must be at least 6 characters.' });
 
-    const newUser = {
+    const db = await readDB();
+    const uname = username.trim().toLowerCase();
+    const targetCode = collegeCode.trim().toUpperCase();
+
+    // Check if the username is already taken within this specific college
+    if(db.users.some(u => u.username.toLowerCase() === uname && u.collegeCode === targetCode)){
+      return res.status(400).json({ error:'That username is already taken for this college.' });
+    }
+
+    const user = {
       id: crypto.randomUUID(),
       fullName: fullName.trim(),
       collegeName: collegeName.trim(),
       department: department.trim(),
-      collegeCode: codeClean,
-      username: userClean,
+      collegeCode: targetCode, 
+      username: username.trim(),
       passwordHash: hashPassword(password),
       role: 'student',
       createdAt: Date.now()
     };
-
-    db.users.push(newUser);
+    db.users.push(user);
     const token = newToken();
-    db.sessions[token] = { userId: newUser.id, expiresAt: Date.now() + (7 * 24 * 60 * 60 * 1000) };
-    writeDB(db);
-
-    res.json({ token, user: publicUser(newUser) });
+    db.sessions[token] = { userId: user.id, expiresAt: Date.now()+SESSION_TTL_MS };
+    await writeDB(db);
+    res.json({ token, user: publicUser(user) });
+  }catch(e){
+    console.error('Register failed:', e);
+    res.status(500).json({ error:'Server error — please try again.' });
   }
 });
 
 app.post('/api/auth/login', async (req, res) => {
-  const { collegeCode, username, password } = req.body || {};
-  if(!collegeCode || !username || !password){
-    return res.status(400).json({ error: 'College code, username, and password required' });
-  }
-  const codeClean = collegeCode.trim().toUpperCase();
-  const userClean = username.trim().toLowerCase();
+  try{
+    const { collegeCode, username, password } = req.body || {};
+    if(!collegeCode || !username || !password) return res.status(400).json({ error:'All fields are required.' });
 
-  if(isMongoConnected){
-    try{
-      const user = await MongoUser.findOne({
-        $or: [
-          { collegeCode: codeClean, username: userClean },
-          { role: 'owner', username: userClean }
-        ]
-      });
-
-      if(!user || !verifyPassword(password, user.passwordHash)){
-        return res.status(401).json({ error: 'Invalid college code, username, or password' });
-      }
-
-      const token = newToken();
-      await MongoSession.create({ token, userId: user.id, expiresAt: Date.now() + (7 * 24 * 60 * 60 * 1000) });
-      return res.json({ token, user: publicUser(user) });
-    }catch(e){
-      return res.status(500).json({ error: 'Login error' });
-    }
-  } else {
-    const db = readDB();
-    const user = db.users.find(u =>
-      (u.collegeCode === codeClean || u.role === 'owner') &&
-      (u.username.toLowerCase() === userClean)
-    );
+    const db = await readDB();
+    const uname = username.trim().toLowerCase();
+    const targetCode = collegeCode.trim().toUpperCase();
+    
+    // Find user matching both username AND the typed collegeCode dynamically
+    const user = db.users.find(u => u.username.toLowerCase() === uname && u.collegeCode === targetCode);
 
     if(!user || !verifyPassword(password, user.passwordHash)){
-      return res.status(401).json({ error: 'Invalid college code, username, or password' });
+      return res.status(401).json({ error:'Invalid college code, username, or password.' });
     }
-
     const token = newToken();
-    db.sessions[token] = { userId: user.id, expiresAt: Date.now() + (7 * 24 * 60 * 60 * 1000) };
-    writeDB(db);
-
+    db.sessions[token] = { userId: user.id, expiresAt: Date.now()+SESSION_TTL_MS };
+    await writeDB(db);
     res.json({ token, user: publicUser(user) });
+  }catch(e){
+    console.error('Login failed:', e);
+    res.status(500).json({ error:'Server error — please try again.' });
+  }
+});
+
+app.post('/api/auth/logout', requireAuth, async (req, res) => {
+  try{
+    delete req.db.sessions[req.token];
+    await writeDB(req.db);
+    res.json({ ok:true });
+  }catch(e){
+    console.error('Logout failed:', e);
+    res.status(500).json({ error:'Server error — please try again.' });
   }
 });
 
@@ -300,138 +231,100 @@ app.get('/api/auth/me', requireAuth, (req, res) => {
   res.json({ user: publicUser(req.user) });
 });
 
-app.post('/api/auth/logout', requireAuth, async (req, res) => {
-  if(isMongoConnected){
-    await MongoSession.deleteOne({ token: req.token });
-  } else {
-    delete req.db.sessions[req.token];
-    writeDB(req.db);
-  }
-  res.json({ ok: true });
+/* ---------- owner routes ---------- */
+app.get('/api/owner/users', requireAuth, requireOwner, (req, res) => {
+  res.json({ users: req.db.users.map(publicUser) });
 });
 
-/* ---------- Owner: Manage Users ---------- */
-app.get('/api/owner/users', requireOwner, async (req, res) => {
-  if(isMongoConnected){
-    const users = await MongoUser.find({});
-    res.json({ users: users.map(publicUser) });
-  } else {
-    res.json({ users: req.db.users.map(publicUser) });
-  }
-});
-
-app.patch('/api/owner/users/:id', requireOwner, async (req, res) => {
-  const { id } = req.params;
-  const { role } = req.body || {};
-  if(!['student', 'incharge'].includes(role)) return res.status(400).json({ error: 'Invalid role' });
-
-  if(isMongoConnected){
-    const user = await MongoUser.findOne({ id });
-    if(!user) return res.status(404).json({ error: 'User not found' });
-    if(user.role === 'owner') return res.status(400).json({ error: 'Cannot demote system owner' });
-    user.role = role;
-    await user.save();
-    res.json({ user: publicUser(user) });
-  } else {
+app.patch('/api/owner/users/:id', requireAuth, requireOwner, async (req, res) => {
+  try{
+    const { role } = req.body || {};
+    if(!['student','incharge'].includes(role)) return res.status(400).json({ error:'Invalid role.' });
     const db = req.db;
-    const user = db.users.find(u => u.id === id);
-    if(!user) return res.status(404).json({ error: 'User not found' });
-    if(user.role === 'owner') return res.status(400).json({ error: 'Cannot demote system owner' });
-    user.role = role;
-    writeDB(db);
-    res.json({ user: publicUser(user) });
+    const target = db.users.find(u=>u.id===req.params.id);
+    if(!target) return res.status(404).json({ error:'User not found.' });
+    if(target.role==='owner') return res.status(400).json({ error:"Can't change the Owner's role." });
+    target.role = role;
+    await writeDB(db);
+    res.json({ user: publicUser(target) });
+  }catch(e){
+    console.error('Role update failed:', e);
+    res.status(500).json({ error:'Server error — please try again.' });
   }
 });
 
-app.delete('/api/owner/users/:id', requireOwner, async (req, res) => {
-  const { id } = req.params;
-  if(isMongoConnected){
-    const user = await MongoUser.findOne({ id });
-    if(!user) return res.status(404).json({ error: 'User not found' });
-    if(user.role === 'owner') return res.status(400).json({ error: 'Cannot remove system owner' });
-    await MongoUser.deleteOne({ id });
-    await MongoSession.deleteMany({ userId: id });
-    res.json({ ok: true });
-  } else {
+app.delete('/api/owner/users/:id', requireAuth, requireOwner, async (req, res) => {
+  try{
     const db = req.db;
-    const user = db.users.find(u => u.id === id);
-    if(!user) return res.status(404).json({ error: 'User not found' });
-    if(user.role === 'owner') return res.status(400).json({ error: 'Cannot remove system owner' });
-    db.users = db.users.filter(u => u.id !== id);
-    Object.keys(db.sessions).forEach(t => {
-      if(db.sessions[t].userId === id) delete db.sessions[t];
-    });
-    writeDB(db);
-    res.json({ ok: true });
+    const target = db.users.find(u=>u.id===req.params.id);
+    if(!target) return res.status(404).json({ error:'User not found.' });
+    if(target.role==='owner') return res.status(400).json({ error:"Can't remove the Owner account." });
+    db.users = db.users.filter(u=>u.id!==req.params.id);
+    Object.keys(db.sessions).forEach(t=>{ if(db.sessions[t].userId===req.params.id) delete db.sessions[t]; });
+    await writeDB(db);
+    res.json({ ok:true });
+  }catch(e){
+    console.error('User removal failed:', e);
+    res.status(500).json({ error:'Server error — please try again.' });
   }
 });
 
-/* ---------- Storage API (College Scoped) ---------- */
-app.get('/api/storage/:key', requireAuth, async (req, res) => {
+/* ---------- college-scoped key-value storage ---------- */
+app.get('/api/storage/:key', requireAuth, (req, res) => {
   const { key } = req.params;
   const shared = req.query.shared === 'true';
-  const namespace = shared ? `college:${req.user.collegeCode}` : `user:${req.user.id}`;
 
-  if(isMongoConnected){
-    try{
-      const doc = await MongoStorage.findOne({ namespace, key });
-      res.json({ key, value: doc ? doc.value : null, shared });
-    }catch(e){
-      res.json({ key, value: null, shared });
-    }
-  } else {
-    const value = (req.db.storage[namespace] && req.db.storage[namespace][key] !== undefined) ? req.db.storage[namespace][key] : null;
-    res.json({ key, value, shared });
-  }
+  const cleanCollegeCode = (req.user.collegeCode || '').trim().toUpperCase();
+  const namespace = shared ? `college:${cleanCollegeCode}` : `user:${req.user.id}`;
+
+  const value = (req.db.storage[namespace] && req.db.storage[namespace][key] !== undefined) ? req.db.storage[namespace][key] : null;
+  res.json({ key, value, shared });
 });
 
 app.post('/api/storage/:key', requireAuth, async (req, res) => {
-  const { key } = req.params;
-  const { value, shared } = req.body || {};
-  const namespace = shared ? `college:${req.user.collegeCode}` : `user:${req.user.id}`;
+  try{
+    const { key } = req.params;
+    const { value, shared } = req.body || {};
 
-  if(isMongoConnected){
-    try{
-      await MongoStorage.findOneAndUpdate(
-        { namespace, key },
-        { namespace, key, value },
-        { upsert: true, new: true }
-      );
-      res.json({ key, ok: true, shared });
-    }catch(e){
-      res.status(500).json({ error: 'Failed to write storage to MongoDB' });
-    }
-  } else {
+    const cleanCollegeCode = (req.user.collegeCode || '').trim().toUpperCase();
+    const namespace = shared ? `college:${cleanCollegeCode}` : `user:${req.user.id}`;
+
     const db = req.db;
     if(!db.storage[namespace]) db.storage[namespace] = {};
     db.storage[namespace][key] = value;
-    writeDB(db);
-    res.json({ key, ok: true, shared });
+    await writeDB(db);
+    res.json({ key, ok:true, shared });
+  }catch(e){
+    console.error('Storage write failed:', e);
+    res.status(500).json({ error:'Server error — please try again.' });
   }
 });
 
 app.delete('/api/storage/:key', requireAuth, async (req, res) => {
-  const { key } = req.params;
-  const shared = req.query.shared === 'true';
-  const namespace = shared ? `college:${req.user.collegeCode}` : `user:${req.user.id}`;
+  try{
+    const { key } = req.params;
+    const shared = req.query.shared === 'true';
 
-  if(isMongoConnected){
-    await MongoStorage.deleteOne({ namespace, key });
-    res.json({ key, deleted: true, shared });
-  } else {
+    const cleanCollegeCode = (req.user.collegeCode || '').trim().toUpperCase();
+    const namespace = shared ? `college:${cleanCollegeCode}` : `user:${req.user.id}`;
+
     const db = req.db;
     if(db.storage[namespace]) delete db.storage[namespace][key];
-    writeDB(db);
-    res.json({ key, deleted: true, shared });
+    await writeDB(db);
+    res.json({ key, deleted:true, shared });
+  }catch(e){
+    console.error('Storage delete failed:', e);
+    res.status(500).json({ error:'Server error — please try again.' });
   }
 });
 
-app.get('/api/health', (req, res) => res.json({
-  status: 'ok',
-  time: Date.now(),
-  database: isMongoConnected ? 'MongoDB Atlas' : 'Local JSON'
-}));
+app.get('/api/health', (req, res) => res.json({ status:'ok', storageMode, time: Date.now() }));
 
-app.listen(PORT, () => {
-  console.log(`LabTrack server running at http://localhost:${PORT}`);
-});
+async function start(){
+  await initStorage();
+  await ensureOwner();
+  app.listen(PORT, () => {
+    console.log(`LabTrack server running at http://localhost:${PORT} (storage: ${storageMode})`);
+  });
+}
+start();
