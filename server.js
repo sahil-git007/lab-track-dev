@@ -150,16 +150,12 @@ function requireOwner(req, res, next){
   if(req.user.role!=='owner') return res.status(403).json({ error:'Owner only' });
   next();
 }
-function requireManager(req, res, next){
-  if(req.user.role!=='owner' && req.user.role!=='incharge') return res.status(403).json({ error:'Lab manager access required.' });
-  next();
-}
 
 /* ---------- auth routes ---------- */
 app.post('/api/auth/register', async (req, res) => {
   try{
-    const { fullName, collegeName, department, collegeCode, collegeEmail, username, password } = req.body || {};
-    if(!fullName || !collegeName || !department || !collegeCode || !collegeEmail || !username || !password){
+    const { fullName, collegeName, department, collegeCode, username, password } = req.body || {};
+    if(!fullName || !collegeName || !department || !collegeCode || !username || !password){
       return res.status(400).json({ error:'All fields are required.' });
     }
     if(password.length < 6) return res.status(400).json({ error:'Password must be at least 6 characters.' });
@@ -179,11 +175,9 @@ app.post('/api/auth/register', async (req, res) => {
       collegeName: collegeName.trim(),
       department: department.trim(),
       collegeCode: targetCode, 
-      collegeEmail: collegeEmail.trim().toLowerCase(),
       username: username.trim(),
       passwordHash: hashPassword(password),
       role: 'student',
-      status: 'pending',
       createdAt: Date.now()
     };
     db.users.push(user);
@@ -238,27 +232,19 @@ app.get('/api/auth/me', requireAuth, (req, res) => {
 });
 
 /* ---------- owner routes ---------- */
-app.get('/api/owner/users', requireAuth, requireManager, (req, res) => {
-  const users = req.user.role === 'owner'
-    ? req.db.users
-    : req.db.users.filter(user => user.collegeCode === req.user.collegeCode && user.role !== 'owner');
-  res.json({ users: users.map(publicUser) });
+app.get('/api/owner/users', requireAuth, requireOwner, (req, res) => {
+  res.json({ users: req.db.users.map(publicUser) });
 });
 
-app.patch('/api/owner/users/:id', requireAuth, requireManager, async (req, res) => {
+app.patch('/api/owner/users/:id', requireAuth, requireOwner, async (req, res) => {
   try{
-    const { role, status } = req.body || {};
-    if(role !== undefined && !['student','incharge'].includes(role)) return res.status(400).json({ error:'Invalid role.' });
-    if(status !== undefined && !['pending','approved'].includes(status)) return res.status(400).json({ error:'Invalid status.' });
-    if(role === undefined && status === undefined) return res.status(400).json({ error:'No update supplied.' });
+    const { role } = req.body || {};
+    if(!['student','incharge'].includes(role)) return res.status(400).json({ error:'Invalid role.' });
     const db = req.db;
     const target = db.users.find(u=>u.id===req.params.id);
     if(!target) return res.status(404).json({ error:'User not found.' });
-    if(target.role==='owner') return res.status(400).json({ error:"Can't modify the Owner account." });
-    if(req.user.role === 'incharge' && target.collegeCode !== req.user.collegeCode) return res.status(403).json({ error:'You can only manage accounts at your college.' });
-    if(req.user.role === 'incharge' && role !== undefined) return res.status(403).json({ error:'Only the Owner can change roles.' });
-    if(role !== undefined) target.role = role;
-    if(status !== undefined) target.status = status;
+    if(target.role==='owner') return res.status(400).json({ error:"Can't change the Owner's role." });
+    target.role = role;
     await writeDB(db);
     res.json({ user: publicUser(target) });
   }catch(e){
@@ -267,13 +253,12 @@ app.patch('/api/owner/users/:id', requireAuth, requireManager, async (req, res) 
   }
 });
 
-app.delete('/api/owner/users/:id', requireAuth, requireManager, async (req, res) => {
+app.delete('/api/owner/users/:id', requireAuth, requireOwner, async (req, res) => {
   try{
     const db = req.db;
     const target = db.users.find(u=>u.id===req.params.id);
     if(!target) return res.status(404).json({ error:'User not found.' });
     if(target.role==='owner') return res.status(400).json({ error:"Can't remove the Owner account." });
-    if(req.user.role === 'incharge' && target.collegeCode !== req.user.collegeCode) return res.status(403).json({ error:'You can only manage accounts at your college.' });
     db.users = db.users.filter(u=>u.id!==req.params.id);
     Object.keys(db.sessions).forEach(t=>{ if(db.sessions[t].userId===req.params.id) delete db.sessions[t]; });
     await writeDB(db);
