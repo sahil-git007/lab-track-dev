@@ -179,6 +179,18 @@ async function boot(){
     if(!res.ok) throw new Error('not authed');
     const data = await res.json();
     currentUser = data.user;
+    
+    const localApprovals = JSON.parse(localStorage.getItem('labtrack_approved_users') || '{}');
+    if(localApprovals[currentUser.id]){
+       currentUser.status = 'approved';
+    }
+
+    if(currentUser.status && currentUser.status !== 'approved' && currentUser.role !== 'owner'){
+      doLogout(false);
+      renderAuthScreen('login', 'Your account is pending approval by your Lab In-Charge or Owner.');
+      return;
+    }
+
     profileName = currentUser.fullName;
     profileRole = currentUser.role;
   }catch(e){
@@ -300,6 +312,19 @@ function renderAuthScreen(mode, errorMsg){
         });
         const data = await res.json();
         if(!res.ok){ renderAuthScreen('login', data.error || 'Login failed.'); return; }
+        
+        const user = data.user;
+        if(user && user.role !== 'owner') {
+           const localApprovals = JSON.parse(localStorage.getItem('labtrack_approved_users') || '{}');
+           const isLocallyApproved = localApprovals[user.id];
+           
+           if(user.status !== 'approved' && !isLocallyApproved) {
+              renderAuthScreen('login', 'Your account is pending approval by your Lab In-Charge or Owner.');
+              showToast('Your account is pending approval by your Lab In-Charge or Owner.', 'error');
+              return;
+           }
+        }
+
         authToken = data.token;
         localStorage.setItem(AUTH_KEY, authToken);
         boot();
@@ -463,7 +488,7 @@ function showToast(msg, type='info'){
   };
   const c = colors[type] || colors.info;
   const toast = document.createElement('div');
-  toast.style.cssText = `background:${c.bg};color:${c.fg};padding:10px 14px;border-radius:6px;font-size:13px;font-family:'IBM Plex Sans',sans-serif;box-shadow:0 6px 16px rgba(0,0,0,0.25);`;
+  toast.style.cssText = `background:${c.bg};color:${c.fg};padding:10px 14px;border-radius:6px;font-size:13px;font-family:'IBM Plex Sans',sans-serif;box-shadow:0 4px 16px rgba(0,0,0,0.25);`;
   toast.textContent = msg;
   host.appendChild(toast);
   setTimeout(()=>{ toast.style.transition='opacity .3s'; toast.style.opacity='0'; setTimeout(()=>toast.remove(), 300); }, 3800);
@@ -492,10 +517,13 @@ function renderSidebar(){
   if(closeBtn){
     closeBtn.onclick = (e)=>{
       e.stopPropagation();
-      sb.classList.remove('sidebar-open');
-      sb.classList.add('sidebar-collapsed');
-      const backdrop = document.getElementById('sidebarBackdrop');
-      if(backdrop) backdrop.classList.remove('active');
+      if(window.innerWidth <= 768){
+        sb.classList.remove('sidebar-open');
+        const backdrop = document.getElementById('sidebarBackdrop');
+        if(backdrop) backdrop.classList.remove('active');
+      } else {
+        sb.classList.add('sidebar-collapsed');
+      }
     };
   }
 }
@@ -506,7 +534,7 @@ async function switchTab(tab){
 
   const sidebar = document.getElementById('sidebar');
   const backdrop = document.getElementById('sidebarBackdrop');
-  if(sidebar) sidebar.classList.remove('sidebar-open');
+  if(sidebar && window.innerWidth <= 768) sidebar.classList.remove('sidebar-open');
   if(backdrop) backdrop.classList.remove('active');
 
   renderSidebar();
@@ -752,7 +780,6 @@ async function renderInventory(){
         <button class="btn btn-primary" id="eqSubmit">Add equipment</button>
       ` : `
         <p style="margin:0 0 10px;">You're signed in as <strong>${profileName ? esc(profileName) : 'a guest'}</strong> (${profileName ? 'Student' : 'no profile set yet'}). Only Lab In-Charge accounts can register new equipment.</p>
-        <button class="btn" id="becomeIncharge">${profileName ? 'Switch to Lab In-Charge' : 'Set up your profile'}</button>
       `}
     </div>
     <div class="filter-row">
@@ -780,8 +807,6 @@ async function renderInventory(){
       showToast(`${name} added as ${tag}.`, 'ok');
       renderInventory();
     };
-  } else {
-    document.getElementById('becomeIncharge').onclick = ()=> promptProfile(true);
   }
   const catSel = document.getElementById('eqFilterCat');
   [...new Set(equipment.map(e=>e.category))].forEach(c=>{
