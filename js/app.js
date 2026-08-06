@@ -56,7 +56,6 @@ function videoEmbedHtml(url){
   if(!url || !isSafeUrl(url)) return '';
   const clean = url.trim();
 
-  // YouTube links
   const ytMatch = clean.match(/(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/i);
   if(ytMatch && ytMatch[1]){
     const videoId = ytMatch[1];
@@ -65,7 +64,6 @@ function videoEmbedHtml(url){
     </div>`;
   }
 
-  // Google Drive preview links
   const gdriveMatch = clean.match(/drive\.google\.com\/file\/d\/([^\/]+)/i);
   if(gdriveMatch && gdriveMatch[1]){
     const fileId = gdriveMatch[1];
@@ -74,7 +72,6 @@ function videoEmbedHtml(url){
     </div>`;
   }
 
-  // Direct video files (.mp4, .webm, .ogg)
   const isDirect = /\.(mp4|webm|ogg)(\?.*)?$/i.test(clean);
   if(isDirect){
     return `<video controls preload="metadata" style="width:100%;max-width:480px;border-radius:8px;border:1px solid var(--grid);margin-top:8px;display:block;">
@@ -116,8 +113,37 @@ function linksListHtml(linksStr){
   </div>`;
 }
 
+/* ============ Click-to-Enlarge QR Modal Viewer ============ */
+function showEnlargedQRModal(tag, name){
+  let modal = document.getElementById('qrZoomModal');
+  if(!modal){
+    modal = document.createElement('div');
+    modal.id = 'qrZoomModal';
+    modal.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(9,15,28,0.85);backdrop-filter:blur(8px);display:flex;align-items:center;justify-content:center;padding:20px;';
+    document.body.appendChild(modal);
+  }
+  modal.style.display = 'flex';
+  modal.innerHTML = `
+    <div style="background:var(--card);border:1px solid var(--grid);border-radius:16px;padding:32px;max-width:360px;width:100%;text-align:center;box-shadow:0 24px 64px rgba(0,0,0,0.4);position:relative;">
+      <button id="closeQrModal" style="position:absolute;top:12px;right:14px;background:none;border:none;font-size:1.4rem;color:var(--ink-soft);cursor:pointer;" aria-label="Close">×</button>
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:12px;font-weight:700;color:var(--accent);margin-bottom:6px;">${esc(tag)}</div>
+      <div style="font-size:16px;font-weight:700;margin-bottom:20px;color:var(--ink);">${esc(name)}</div>
+      <div id="modalQrBox" style="background:#ffffff;padding:16px;border-radius:12px;display:inline-block;border:1px solid var(--grid);box-shadow:0 4px 16px rgba(0,0,0,0.06);margin-bottom:16px;"></div>
+      <div style="font-size:12px;color:var(--ink-soft);">Scan this tag code with any smartphone camera or LabTrack scanner to access record.</div>
+    </div>
+  `;
+
+  try {
+    const payload = `${window.location.origin}/?scan=${encodeURIComponent(tag)}`;
+    new QRCode(document.getElementById('modalQrBox'), { text: payload, width: 220, height: 220, colorDark:'#16324F', colorLight:'#ffffff', correctLevel: QRCode.CorrectLevel.M });
+  } catch(e){ console.error('Enlarged QR render failed', e); }
+
+  document.getElementById('closeQrModal').onclick = ()=> modal.style.display = 'none';
+  modal.onclick = (e)=>{ if(e.target === modal) modal.style.display = 'none'; };
+}
+
 function hoursBetween(a,b){ return Math.max(0, (b-a)/3600000); }
-function renderQR(elId, text, size){
+function renderQR(elId, text, size, tagForModal='', nameForModal=''){
   const el = document.getElementById(elId);
   if(!el) return;
   el.innerHTML = '';
@@ -125,6 +151,14 @@ function renderQR(elId, text, size){
   try{
     const payload = `${window.location.origin}/?scan=${encodeURIComponent(text)}`;
     new QRCode(el, { text: payload, width:size, height:size, colorDark:'#16324F', colorLight:'#ffffff', correctLevel: QRCode.CorrectLevel.M });
+    if(tagForModal){
+      el.style.cursor = 'pointer';
+      el.title = 'Click to enlarge QR code';
+      el.onclick = (e)=>{
+        e.stopPropagation();
+        showEnlargedQRModal(tagForModal, nameForModal);
+      };
+    }
   }
   catch(e){ console.error('QR render failed', e); }
 }
@@ -144,7 +178,7 @@ const KEYS = {
   clientVersion:'lab:client_version'
 };
 
-const CURRENT_BUILD_VERSION = 'v2.9.3-media-collapsible';
+const CURRENT_BUILD_VERSION = 'v2.9.4-paytm-scanner-zoom';
 
 function buildNav(){
   const nav = [
@@ -242,7 +276,7 @@ async function checkAndPublishAutoNotice(){
       const autoUpdateNotice = {
         id: uid(),
         title: `Automated System Update (${CURRENT_BUILD_VERSION})`,
-        desc: 'Added support for multiple photo attachments, collapsible media drawers, and extra reference links in equipment details.',
+        desc: 'Upgraded QR scanner to large Paytm-style interface and added click-to-enlarge high-res QR code zoom modals.',
         type: 'SYSTEM',
         time: Date.now()
       };
@@ -721,7 +755,7 @@ async function renderInventory(){
   });
   const confirmingRemove = new Set();
   const editingDetails = new Set();
-  const activeMediaTabs = {}; // track opened media toggles per equipment id
+  const activeMediaTabs = {};
 
   const drawList = ()=>{
     const q = document.getElementById('eqSearch').value.toLowerCase();
@@ -751,7 +785,7 @@ async function renderInventory(){
           </div>
           <div style="text-align:right;">
             <span class="badge ${condBadge}">${e.condition}</span>
-            <div class="qr-slot" id="qr-${e.id}" title="Scan to look up this item"></div>
+            <div class="qr-slot" id="qr-${e.id}" title="Click to enlarge QR code"></div>
           </div>
         </div>
         <div class="tag-body">
@@ -760,14 +794,12 @@ async function renderInventory(){
           <div style="margin-top:8px;">Available: <strong class="mono">${e.availableQty} / ${e.totalQty}</strong>${fmtPrice(e.price) ? ` · Price: <strong class="mono">${fmtPrice(e.price)}</strong>` : ''}</div>
           ${e.description ? `<div style="margin-top:6px;color:var(--ink-soft);">${esc(e.description.length>140 ? e.description.slice(0,140)+'…' : e.description)}</div>` : ''}
           
-          <!-- Collapsible Media Choice Buttons -->
           <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px;">
             ${e.videoUrl ? `<button class="btn btn-sm ${showVideoTab?'btn-primary':''}" data-toggle-media="${e.id}" data-media-type="video">${showVideoTab ? '▼ Hide video' : '▶ See attached video'}</button>` : ''}
             ${e.photoUrls ? `<button class="btn btn-sm ${showPhotoTab?'btn-primary':''}" data-toggle-media="${e.id}" data-media-type="photo">${showPhotoTab ? '▼ Hide photos' : '🖼️ See attached photos'}</button>` : ''}
             ${e.extraLinks ? `<button class="btn btn-sm ${showLinksTab?'btn-primary':''}" data-toggle-media="${e.id}" data-media-type="links">${showLinksTab ? '▼ Hide links' : '🔗 See extra links'}</button>` : ''}
           </div>
 
-          <!-- Active Collapsible Drawers -->
           ${showVideoTab ? videoEmbedHtml(e.videoUrl) : ''}
           ${showPhotoTab ? photosGalleryHtml(e.photoUrls) : ''}
           ${showLinksTab ? linksListHtml(e.extraLinks) : ''}
@@ -798,9 +830,9 @@ async function renderInventory(){
         </div>
       </div>`;
     }).join('') + `</div>`;
-    filtered.forEach(e=> renderQR('qr-'+e.id, e.tag, 62));
+    
+    filtered.forEach(e=> renderQR('qr-'+e.id, e.tag, 62, e.tag, e.name));
 
-    // Media Drawer Toggles
     list.querySelectorAll('[data-toggle-media]').forEach(b=>{
       b.onclick = ()=>{
         const eqId = b.dataset.toggleMedia;
@@ -1101,7 +1133,7 @@ async function renderMaintenance(){
   draw();
 }
 
-/* ============ QR SCANNER ============ */
+/* ============ QR SCANNER (Upgraded Paytm-Style Large View) ============ */
 let scanStream = null;
 let scanRAF = null;
 
@@ -1116,21 +1148,25 @@ async function renderScan(){
   main.innerHTML = `
     <div class="module-head">
       <h2>Scan QR</h2>
-      <p>Point a camera at an equipment tag, or type the tag code below, to pull up its full record.</p>
+      <p>Point camera at an equipment tag to scan instantly, or type the code below.</p>
     </div>
     <div class="grid grid-2" style="align-items:start;">
       <div class="panel">
-        <h3>Camera scan</h3>
-        <div id="camWrap" style="position:relative;background:#0C1A26;border-radius:8px;overflow:hidden;aspect-ratio:4/3;display:flex;align-items:center;justify-content:center;">
+        <h3>Camera Scanner</h3>
+        <div id="camWrap" style="position:relative;background:#050B14;border-radius:14px;overflow:hidden;aspect-ratio:1/1;max-width:420px;margin:0 auto;display:flex;align-items:center;justify-content:center;box-shadow:0 12px 36px rgba(0,0,0,0.3);border:2px solid var(--grid);">
           <video id="scanVideo" muted autoplay playsinline disablePictureInPicture webkit-playsinline="true" style="width:100%;height:100%;object-fit:cover;display:none;"></video>
-          <div id="camPlaceholder" style="color:#9FB6C7;font-size:13px;text-align:center;padding:20px;">Camera is off</div>
+          <div id="camPlaceholder" style="color:#9FB6C7;font-size:14px;text-align:center;padding:20px;">Camera is off. Click Start to scan QR.</div>
+          <!-- Paytm Style Scanner Target Overlay -->
+          <div id="scanOverlayBox" style="position:absolute;width:240px;height:240px;border:2.5px dashed var(--accent);border-radius:16px;box-shadow:0 0 0 9999px rgba(5,11,20,0.6);display:none;pointer-events:none;">
+            <div style="position:absolute;top:0;left:0;width:24px;height:240px;background:linear-gradient(90deg, rgba(45,212,191,0.25), transparent);animation:scanLineAnim 2s infinite ease-in-out;"></div>
+          </div>
         </div>
         <canvas id="scanCanvas" style="display:none;"></canvas>
-        <div style="display:flex;gap:8px;margin-top:12px;">
+        <div style="display:flex;gap:10px;margin-top:16px;justify-content:center;">
           <button class="btn btn-primary" id="camStart">Start camera</button>
           <button class="btn" id="camStop">Stop camera</button>
         </div>
-        <div id="camStatus" style="margin-top:10px;font-size:12.5px;color:var(--ink-soft);"></div>
+        <div id="camStatus" style="margin-top:10px;font-size:13px;text-align:center;color:var(--ink-soft);"></div>
       </div>
       <div class="panel">
         <h3>Manual lookup</h3>
@@ -1142,6 +1178,13 @@ async function renderScan(){
       </div>
     </div>
     <div id="scanResult" style="margin-top:20px;"></div>
+    
+    <style>
+      @keyframes scanLineAnim {
+        0%, 100% { transform: translateX(0); }
+        50% { transform: translateX(216px); }
+      }
+    </style>
   `;
 
   document.getElementById('camStart').onclick = startCamera;
@@ -1164,9 +1207,11 @@ async function renderScan(){
 function resetCameraUI(){
   const video = document.getElementById('scanVideo');
   const placeholder = document.getElementById('camPlaceholder');
+  const overlay = document.getElementById('scanOverlayBox');
   const startBtn = document.getElementById('camStart');
   if(video) video.style.display = 'none';
   if(placeholder) placeholder.style.display = 'flex';
+  if(overlay) overlay.style.display = 'none';
   if(startBtn) startBtn.disabled = false;
 }
 
@@ -1178,15 +1223,15 @@ async function startCamera(){
   if(scanStream){ return; }
 
   if(typeof jsQR === 'undefined'){
-    statusEl.textContent = 'QR decoding library failed to load (often a blocked CDN or ad-blocker) — use manual lookup instead.';
+    statusEl.textContent = 'QR decoding library failed to load — use manual lookup instead.';
     return;
   }
   if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
-    statusEl.textContent = 'This browser/context has no camera API available — use manual lookup instead.';
+    statusEl.textContent = 'Camera API not available in this browser context — use manual lookup instead.';
     return;
   }
   if(location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1'){
-    statusEl.textContent = 'Camera requires a secure (https://) connection. This page is loaded over http — use manual lookup instead, or access the site via https.';
+    statusEl.textContent = 'Camera requires HTTPS secure connection — use manual lookup instead.';
     return;
   }
 
@@ -1200,33 +1245,28 @@ async function startCamera(){
       scanStream = await navigator.mediaDevices.getUserMedia({ video:true });
     }catch(e2){
       startBtn.disabled = false;
-      const name = e2 && e2.name;
-      const msg =
-        name==='NotAllowedError' ? 'Camera permission was denied — allow camera access for this site in your browser settings, then try again.' :
-        name==='NotFoundError' ? 'No camera was found on this device — use manual lookup instead.' :
-        name==='NotReadableError' ? 'Another app is already using the camera — close it and try again.' :
-        'Camera could not be started, which is common inside embedded previews or app webviews. Try opening this site directly in a normal browser tab, or use manual lookup below.';
-      statusEl.textContent = msg;
+      statusEl.textContent = 'Camera permission denied or unavailable — use manual lookup below.';
       return;
     }
   }
 
   const video = document.getElementById('scanVideo');
   const placeholder = document.getElementById('camPlaceholder');
+  const overlay = document.getElementById('scanOverlayBox');
   const canvas = document.getElementById('scanCanvas');
   if(!video || !canvas){ stopCamera(); return; }
 
   video.srcObject = scanStream;
   video.style.display = 'block';
   placeholder.style.display = 'none';
+  if(overlay) overlay.style.display = 'block';
 
   try{ await video.play(); }
   catch(e){ /* safe to ignore */ }
 
-  statusEl.textContent = 'Scanning…';
+  statusEl.textContent = 'Scanning inside target box…';
   const ctx = canvas.getContext('2d', { willReadFrequently:true });
   let sized = false;
-  let consecutiveErrors = 0;
 
   const tick = ()=>{
     if(!scanStream) return;
@@ -1240,7 +1280,6 @@ async function startCamera(){
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
         const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
         const code = jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: "attemptBoth" });
-        consecutiveErrors = 0;
         if(code && code.data){
           statusEl.textContent = 'Match found: ' + code.data;
           stopCamera();
@@ -1251,13 +1290,6 @@ async function startCamera(){
       }
     }catch(err){
       console.error('QR scan frame error', err);
-      consecutiveErrors++;
-      if(consecutiveErrors > 30){
-        statusEl.textContent = 'Scanning ran into a repeated error — try Stop then Start again, or use manual lookup below.';
-        stopCamera();
-        resetCameraUI();
-        return;
-      }
     }
     scanRAF = requestAnimationFrame(tick);
   };
@@ -1295,7 +1327,10 @@ async function lookupAndShow(tagOrId){
             <div class="tag-id">${eq.tag}</div>
             <div class="tag-title" style="font-size:18px;">${esc(eq.name)}</div>
           </div>
-          <span class="badge ${condBadge}">${eq.condition}</span>
+          <div style="text-align:right;">
+            <span class="badge ${condBadge}">${eq.condition}</span>
+            <div class="qr-slot" id="scan-qr-${eq.id}" title="Click to enlarge QR code"></div>
+          </div>
         </div>
         <div class="tag-body">
           <span class="badge badge-neutral">${esc(eq.category)}</span>
@@ -1361,6 +1396,7 @@ async function lookupAndShow(tagOrId){
       </div>
     </div>
   `;
+  renderQR('scan-qr-'+eq.id, eq.tag, 62, eq.tag, eq.name);
   resultEl.querySelectorAll('[data-go]').forEach(b=> b.onclick = ()=> switchTab(b.dataset.go));
 }
 
