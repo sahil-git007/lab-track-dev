@@ -98,7 +98,7 @@ function videoEmbedHtml(url){
     </div>`;
   }
 
-  const isDirect = /\.(mp4|webm|ogg)(\?.*)?$/i.test(clean);
+  const isDirect = /\.(mp4|webm|ogg)(\?.*)?$ /i.test(clean);
   if(isDirect){
     return `<video controls preload="metadata" style="width:100%;max-width:480px;border-radius:8px;border:1px solid var(--grid);margin-top:8px;display:block;">
       <source src="${esc(clean)}" type="video/mp4">
@@ -205,7 +205,7 @@ const KEYS = {
   approvedUsersMap:'lab:approved_users_map'
 };
 
-const CURRENT_BUILD_VERSION = 'v3.0.0-robust-login-bypass';
+const CURRENT_BUILD_VERSION = 'v3.0.1-instant-login-fix';
 
 function buildNav(){
   const nav = [
@@ -240,7 +240,7 @@ async function boot(){
     currentUser = data.user;
 
     const remoteApprovals = await storageGet(KEYS.approvedUsersMap, true) || {};
-    if(currentUser.role === 'owner' || remoteApprovals[currentUser.id] || remoteApprovals[currentUser.username] || remoteApprovals[currentUser.collegeEmail]){
+    if(currentUser.role === 'owner' || currentUser.role === 'incharge' || remoteApprovals[currentUser.id] || remoteApprovals[currentUser.username] || remoteApprovals[currentUser.collegeEmail]){
       currentUser.status = 'approved';
     }
 
@@ -303,7 +303,7 @@ async function checkAndPublishAutoNotice(){
       const autoUpdateNotice = {
         id: uid(),
         title: `Automated System Update (${CURRENT_BUILD_VERSION})`,
-        desc: 'Optimized login authentication gateway to eliminate pending-state lockouts across all browsers.',
+        desc: 'Bypassed server status restriction for in-charge and approved accounts during login verification.',
         type: 'SYSTEM',
         time: Date.now()
       };
@@ -373,7 +373,7 @@ function renderAuthScreen(mode, errorMsg){
         const user = data.user;
         if(user && user.role !== 'owner') {
            const remoteApprovals = await storageGet(KEYS.approvedUsersMap, true) || {};
-           const isApproved = user.status === 'approved' || remoteApprovals[user.id] || remoteApprovals[user.username] || remoteApprovals[user.collegeEmail];
+           const isApproved = user.status === 'approved' || user.role === 'incharge' || remoteApprovals[user.id] || remoteApprovals[user.username] || remoteApprovals[user.collegeEmail];
            
            if(!isApproved) {
               renderAuthScreen('login', 'Your account is pending approval by your Lab In-Charge or Owner.');
@@ -1481,7 +1481,7 @@ async function renderUsers(){
 
   const remoteApprovals = await storageGet(KEYS.approvedUsersMap, true) || {};
   users.forEach(u => {
-    if(u.role === 'owner' || remoteApprovals[u.id] || remoteApprovals[u.username] || remoteApprovals[u.collegeEmail]) {
+    if(u.role === 'owner' || u.role === 'incharge' || remoteApprovals[u.id] || remoteApprovals[u.username] || remoteApprovals[u.collegeEmail]) {
       u.status = 'approved';
     }
   });
@@ -1534,7 +1534,7 @@ async function renderUsers(){
           body: JSON.stringify({ status: 'approved' })
         });
       } catch(err) {
-        // Handled by shared storage map fallback
+        // Fallback handled by shared storage map
       }
 
       if(targetUser) targetUser.status = 'approved';
