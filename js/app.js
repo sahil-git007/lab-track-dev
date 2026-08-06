@@ -178,7 +178,7 @@ const KEYS = {
   clientVersion:'lab:client_version'
 };
 
-const CURRENT_BUILD_VERSION = 'v2.9.4-paytm-scanner-zoom';
+const CURRENT_BUILD_VERSION = 'v2.9.5-db-approval-sync';
 
 function buildNav(){
   const nav = [
@@ -211,12 +211,8 @@ async function boot(){
     if(!res.ok) throw new Error('not authed');
     const data = await res.json();
     currentUser = data.user;
-    
-    const localApprovals = JSON.parse(localStorage.getItem('labtrack_approved_users') || '{}');
-    if(localApprovals[currentUser.id]){
-       currentUser.status = 'approved';
-    }
 
+    // Strict Database Status Check (No fragile localStorage bypass)
     if(currentUser.status && currentUser.status !== 'approved' && currentUser.role !== 'owner'){
       doLogout(false);
       renderAuthScreen('login', 'Your account is pending approval by your Lab In-Charge or Owner.');
@@ -276,7 +272,7 @@ async function checkAndPublishAutoNotice(){
       const autoUpdateNotice = {
         id: uid(),
         title: `Automated System Update (${CURRENT_BUILD_VERSION})`,
-        desc: 'Upgraded QR scanner to large Paytm-style interface and added click-to-enlarge high-res QR code zoom modals.',
+        desc: 'Synchronized account approval status directly with the backend database for seamless multi-device sign-in.',
         type: 'SYSTEM',
         time: Date.now()
       };
@@ -345,10 +341,7 @@ function renderAuthScreen(mode, errorMsg){
         
         const user = data.user;
         if(user && user.role !== 'owner') {
-           const localApprovals = JSON.parse(localStorage.getItem('labtrack_approved_users') || '{}');
-           const isLocallyApproved = localApprovals[user.id];
-           
-           if(user.status !== 'approved' && !isLocallyApproved) {
+           if(user.status !== 'approved') {
               renderAuthScreen('login', 'Your account is pending approval by your Lab In-Charge or Owner.');
               showToast('Your account is pending approval by your Lab In-Charge or Owner.', 'error');
               return;
@@ -1156,7 +1149,6 @@ async function renderScan(){
         <div id="camWrap" style="position:relative;background:#050B14;border-radius:14px;overflow:hidden;aspect-ratio:1/1;max-width:420px;margin:0 auto;display:flex;align-items:center;justify-content:center;box-shadow:0 12px 36px rgba(0,0,0,0.3);border:2px solid var(--grid);">
           <video id="scanVideo" muted autoplay playsinline disablePictureInPicture webkit-playsinline="true" style="width:100%;height:100%;object-fit:cover;display:none;"></video>
           <div id="camPlaceholder" style="color:#9FB6C7;font-size:14px;text-align:center;padding:20px;">Camera is off. Click Start to scan QR.</div>
-          <!-- Paytm Style Scanner Target Overlay -->
           <div id="scanOverlayBox" style="position:absolute;width:240px;height:240px;border:2.5px dashed var(--accent);border-radius:16px;box-shadow:0 0 0 9999px rgba(5,11,20,0.6);display:none;pointer-events:none;">
             <div style="position:absolute;top:0;left:0;width:24px;height:240px;background:linear-gradient(90deg, rgba(45,212,191,0.25), transparent);animation:scanLineAnim 2s infinite ease-in-out;"></div>
           </div>
