@@ -205,7 +205,7 @@ const KEYS = {
   approvedUsersMap:'lab:approved_users_map'
 };
 
-const CURRENT_BUILD_VERSION = 'v2.9.9-universal-sync';
+const CURRENT_BUILD_VERSION = 'v3.0.0-robust-login-bypass';
 
 function buildNav(){
   const nav = [
@@ -240,7 +240,7 @@ async function boot(){
     currentUser = data.user;
 
     const remoteApprovals = await storageGet(KEYS.approvedUsersMap, true) || {};
-    if(remoteApprovals[currentUser.id] || remoteApprovals[currentUser.username] || remoteApprovals[currentUser.collegeEmail]){
+    if(currentUser.role === 'owner' || remoteApprovals[currentUser.id] || remoteApprovals[currentUser.username] || remoteApprovals[currentUser.collegeEmail]){
       currentUser.status = 'approved';
     }
 
@@ -303,7 +303,7 @@ async function checkAndPublishAutoNotice(){
       const autoUpdateNotice = {
         id: uid(),
         title: `Automated System Update (${CURRENT_BUILD_VERSION})`,
-        desc: 'Universal server-backed approval mapping for flawless cross-device laptop and mobile sign-in synchronization.',
+        desc: 'Optimized login authentication gateway to eliminate pending-state lockouts across all browsers.',
         type: 'SYSTEM',
         time: Date.now()
       };
@@ -1455,7 +1455,7 @@ async function renderUsers(){
   `;
 
   if(profileRole==='owner'){
-    document.getElementById('clearHistoryBtn', true).onclick = async ()=>{
+    document.getElementById('clearHistoryBtn').onclick = async ()=>{
       if(!confirm('Are you sure you want to clear all checkout and maintenance history? This cannot be undone.')) return;
       try{
         await Promise.all([
@@ -1481,7 +1481,7 @@ async function renderUsers(){
 
   const remoteApprovals = await storageGet(KEYS.approvedUsersMap, true) || {};
   users.forEach(u => {
-    if(remoteApprovals[u.id] || remoteApprovals[u.username] || remoteApprovals[u.collegeEmail]) {
+    if(u.role === 'owner' || remoteApprovals[u.id] || remoteApprovals[u.username] || remoteApprovals[u.collegeEmail]) {
       u.status = 'approved';
     }
   });
@@ -1534,7 +1534,7 @@ async function renderUsers(){
           body: JSON.stringify({ status: 'approved' })
         });
       } catch(err) {
-        // Fallback handled by shared storage map
+        // Handled by shared storage map fallback
       }
 
       if(targetUser) targetUser.status = 'approved';
