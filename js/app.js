@@ -205,7 +205,7 @@ const KEYS = {
   approvedUsersMap:'lab:approved_users_map'
 };
 
-const CURRENT_BUILD_VERSION = 'v2.9.8-robust-sync';
+const CURRENT_BUILD_VERSION = 'v2.9.9-universal-sync';
 
 function buildNav(){
   const nav = [
@@ -239,9 +239,8 @@ async function boot(){
     const data = await res.json();
     currentUser = data.user;
 
-    // Check shared server-backed approval map for cross-device sync
     const remoteApprovals = await storageGet(KEYS.approvedUsersMap, true) || {};
-    if(remoteApprovals[currentUser.id] || remoteApprovals[currentUser.username]){
+    if(remoteApprovals[currentUser.id] || remoteApprovals[currentUser.username] || remoteApprovals[currentUser.collegeEmail]){
       currentUser.status = 'approved';
     }
 
@@ -304,7 +303,7 @@ async function checkAndPublishAutoNotice(){
       const autoUpdateNotice = {
         id: uid(),
         title: `Automated System Update (${CURRENT_BUILD_VERSION})`,
-        desc: 'Upgraded cross-device account approval persistence via robust server storage mapping.',
+        desc: 'Universal server-backed approval mapping for flawless cross-device laptop and mobile sign-in synchronization.',
         type: 'SYSTEM',
         time: Date.now()
       };
@@ -374,7 +373,7 @@ function renderAuthScreen(mode, errorMsg){
         const user = data.user;
         if(user && user.role !== 'owner') {
            const remoteApprovals = await storageGet(KEYS.approvedUsersMap, true) || {};
-           const isApproved = user.status === 'approved' || remoteApprovals[user.id] || remoteApprovals[user.username];
+           const isApproved = user.status === 'approved' || remoteApprovals[user.id] || remoteApprovals[user.username] || remoteApprovals[user.collegeEmail];
            
            if(!isApproved) {
               renderAuthScreen('login', 'Your account is pending approval by your Lab In-Charge or Owner.');
@@ -1456,7 +1455,7 @@ async function renderUsers(){
   `;
 
   if(profileRole==='owner'){
-    document.getElementById('clearHistoryBtn').onclick = async ()=>{
+    document.getElementById('clearHistoryBtn', true).onclick = async ()=>{
       if(!confirm('Are you sure you want to clear all checkout and maintenance history? This cannot be undone.')) return;
       try{
         await Promise.all([
@@ -1480,10 +1479,9 @@ async function renderUsers(){
     return;
   }
 
-  // Load shared server-backed approval map fallback to keep UI perfectly synchronized
   const remoteApprovals = await storageGet(KEYS.approvedUsersMap, true) || {};
   users.forEach(u => {
-    if(remoteApprovals[u.id] || remoteApprovals[u.username]) {
+    if(remoteApprovals[u.id] || remoteApprovals[u.username] || remoteApprovals[u.collegeEmail]) {
       u.status = 'approved';
     }
   });
@@ -1523,9 +1521,11 @@ async function renderUsers(){
       const userId = b.dataset.approve;
       const targetUser = users.find(x => x.id === userId);
       
-      // Save approval to shared server storage map so it immediately syncs across laptop & mobile
       remoteApprovals[userId] = true;
-      if(targetUser && targetUser.username) remoteApprovals[targetUser.username] = true;
+      if(targetUser){
+        if(targetUser.username) remoteApprovals[targetUser.username] = true;
+        if(targetUser.collegeEmail) remoteApprovals[targetUser.collegeEmail] = true;
+      }
       await storageSet(KEYS.approvedUsersMap, remoteApprovals, true);
 
       try {
@@ -1534,7 +1534,7 @@ async function renderUsers(){
           body: JSON.stringify({ status: 'approved' })
         });
       } catch(err) {
-        // Handled securely by the shared storage map fallback
+        // Fallback handled by shared storage map
       }
 
       if(targetUser) targetUser.status = 'approved';
