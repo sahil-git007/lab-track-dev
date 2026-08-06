@@ -51,12 +51,12 @@ function esc(s){ return (s||'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;',
 function fmtPrice(p){ return (p===null||p===undefined||p==='') ? null : '₹' + Number(p).toLocaleString('en-IN', {maximumFractionDigits:2}); }
 function isSafeUrl(u){ return /^https?:\/\//i.test((u||'').trim()); }
 
-/* ============ Upgraded Video Embed Player Renderer ============ */
+/* ============ Media & Attachment Renderers ============ */
 function videoEmbedHtml(url){
   if(!url || !isSafeUrl(url)) return '';
   const clean = url.trim();
 
-  // 1. YouTube links parser
+  // YouTube links
   const ytMatch = clean.match(/(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/i);
   if(ytMatch && ytMatch[1]){
     const videoId = ytMatch[1];
@@ -65,7 +65,7 @@ function videoEmbedHtml(url){
     </div>`;
   }
 
-  // 2. Google Drive preview links parser
+  // Google Drive preview links
   const gdriveMatch = clean.match(/drive\.google\.com\/file\/d\/([^\/]+)/i);
   if(gdriveMatch && gdriveMatch[1]){
     const fileId = gdriveMatch[1];
@@ -74,7 +74,7 @@ function videoEmbedHtml(url){
     </div>`;
   }
 
-  // 3. Direct media files (.mp4, .webm, .ogg)
+  // Direct video files (.mp4, .webm, .ogg)
   const isDirect = /\.(mp4|webm|ogg)(\?.*)?$/i.test(clean);
   if(isDirect){
     return `<video controls preload="metadata" style="width:100%;max-width:480px;border-radius:8px;border:1px solid var(--grid);margin-top:8px;display:block;">
@@ -83,8 +83,37 @@ function videoEmbedHtml(url){
     </video>`;
   }
 
-  // 4. Fallback link button
   return `<a class="btn btn-sm" href="${esc(clean)}" target="_blank" rel="noopener" style="margin-top:8px;display:inline-block;">▶ Watch video link</a>`;
+}
+
+function photosGalleryHtml(photosStr){
+  if(!photosStr) return '';
+  const urls = photosStr.split(/[\n,]+/).map(u => u.trim()).filter(isSafeUrl);
+  if(!urls.length) return '';
+
+  return `<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:8px;">
+    ${urls.map((u, idx) => `
+      <a href="${esc(u)}" target="_blank" rel="noopener" title="Click to view full photo" style="display:block;width:90px;height:90px;border-radius:8px;overflow:hidden;border:1px solid var(--grid);background:var(--paper);position:relative;">
+        <img src="${esc(u)}" alt="Equipment Photo ${idx+1}" style="width:100%;height:100%;object-fit:cover;" onerror="this.onerror=null;this.src='data:image/svg+xml;charset=UTF-8,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2290%22 height=%2290%22><text x=%2250%%22 y=%2250%%22 dominant-baseline=%22middle%22 text-anchor=%22middle%22 fill=%22%2394A3B8%22 font-size=%2211%22>Invalid Img</text></svg>';">
+      </a>
+    `).join('')}
+  </div>`;
+}
+
+function linksListHtml(linksStr){
+  if(!linksStr) return '';
+  const lines = linksStr.split('\n').map(l => l.trim()).filter(Boolean);
+  if(!lines.length) return '';
+
+  return `<div style="display:flex;flex-direction:column;gap:6px;margin-top:8px;">
+    ${lines.map(line => {
+      let parts = line.split('|');
+      let title = parts.length > 1 ? parts[0].trim() : 'External Reference Link';
+      let url = parts.length > 1 ? parts[1].trim() : parts[0].trim();
+      if(!isSafeUrl(url)) return '';
+      return `<a class="btn btn-sm" href="${esc(url)}" target="_blank" rel="noopener" style="justify-content:flex-start;gap:6px;">🔗 ${esc(title)}</a>`;
+    }).join('')}
+  </div>`;
 }
 
 function hoursBetween(a,b){ return Math.max(0, (b-a)/3600000); }
@@ -115,7 +144,7 @@ const KEYS = {
   clientVersion:'lab:client_version'
 };
 
-const CURRENT_BUILD_VERSION = 'v2.9.2-final-fix';
+const CURRENT_BUILD_VERSION = 'v2.9.3-media-collapsible';
 
 function buildNav(){
   const nav = [
@@ -213,7 +242,7 @@ async function checkAndPublishAutoNotice(){
       const autoUpdateNotice = {
         id: uid(),
         title: `Automated System Update (${CURRENT_BUILD_VERSION})`,
-        desc: 'Enabled fully integrated video streaming & embedding support for YouTube and Google Drive links.',
+        desc: 'Added support for multiple photo attachments, collapsible media drawers, and extra reference links in equipment details.',
         type: 'SYSTEM',
         time: Date.now()
       };
@@ -640,7 +669,13 @@ async function renderInventory(){
           <div class="form-group"><label>How to use</label><textarea id="eqUsage" placeholder="Setup steps, safety notes, calibration reminders…"></textarea></div>
         </div>
         <div class="form-row">
-          <div class="form-group"><label>Video link (optional)</label><input id="eqVideo" type="url" placeholder="YouTube, Google Drive, or .mp4 link" /></div>
+          <div class="form-group"><label>Video link (optional)</label><input id="eqVideo" type="url" placeholder="YouTube, Drive, or direct .mp4 link" /></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>Photo links (optional)</label><textarea id="eqPhotos" placeholder="Paste multiple photo image URLs separated by commas or new lines"></textarea></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>Extra Links / Manuals (optional)</label><textarea id="eqLinks" placeholder="Format: Title | https://url (one per line)"></textarea></div>
         </div>
         <button class="btn btn-primary" id="eqSubmit">Add equipment</button>
       ` : `
@@ -670,6 +705,8 @@ async function renderInventory(){
         description: document.getElementById('eqDescription').value.trim(),
         usageNotes: document.getElementById('eqUsage').value.trim(),
         videoUrl: document.getElementById('eqVideo').value.trim(),
+        photoUrls: document.getElementById('eqPhotos').value.trim(),
+        extraLinks: document.getElementById('eqLinks').value.trim(),
         totalQty: qty, availableQty: qty, condition:'Good', addedBy: profileName, timestamp: Date.now()
       });
       const ok = await saveList(KEYS.equipment, equipment, true);
@@ -684,6 +721,8 @@ async function renderInventory(){
   });
   const confirmingRemove = new Set();
   const editingDetails = new Set();
+  const activeMediaTabs = {}; // track opened media toggles per equipment id
+
   const drawList = ()=>{
     const q = document.getElementById('eqSearch').value.toLowerCase();
     const fc = document.getElementById('eqFilterCat').value;
@@ -698,6 +737,10 @@ async function renderInventory(){
       const condBadge = e.condition==='Good' ? 'badge-ok' : e.condition==='Damaged' ? 'badge-rust' : 'badge-warn';
       const confirming = confirmingRemove.has(e.id);
       const editing = editingDetails.has(e.id);
+      const showVideoTab = activeMediaTabs[e.id] === 'video';
+      const showPhotoTab = activeMediaTabs[e.id] === 'photo';
+      const showLinksTab = activeMediaTabs[e.id] === 'links';
+
       return `
       <div class="asset-tag">
         <span class="tick-tr"></span><span class="tick-br"></span>
@@ -716,21 +759,34 @@ async function renderInventory(){
           <span class="badge badge-neutral">${esc(e.location)}</span>
           <div style="margin-top:8px;">Available: <strong class="mono">${e.availableQty} / ${e.totalQty}</strong>${fmtPrice(e.price) ? ` · Price: <strong class="mono">${fmtPrice(e.price)}</strong>` : ''}</div>
           ${e.description ? `<div style="margin-top:6px;color:var(--ink-soft);">${esc(e.description.length>140 ? e.description.slice(0,140)+'…' : e.description)}</div>` : ''}
-          ${e.videoUrl ? `<div style="margin-top:8px;"><span class="badge badge-ok">▶ Video attached</span>${videoEmbedHtml(e.videoUrl)}</div>` : ''}
-          ${!e.price && !e.description && !e.usageNotes && !e.videoUrl && isIncharge ? `<div style="margin-top:6px;font-size:12px;color:var(--amber);">No price/description/usage/video info yet.</div>` : ''}
+          
+          <!-- Collapsible Media Choice Buttons -->
+          <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px;">
+            ${e.videoUrl ? `<button class="btn btn-sm ${showVideoTab?'btn-primary':''}" data-toggle-media="${e.id}" data-media-type="video">${showVideoTab ? '▼ Hide video' : '▶ See attached video'}</button>` : ''}
+            ${e.photoUrls ? `<button class="btn btn-sm ${showPhotoTab?'btn-primary':''}" data-toggle-media="${e.id}" data-media-type="photo">${showPhotoTab ? '▼ Hide photos' : '🖼️ See attached photos'}</button>` : ''}
+            ${e.extraLinks ? `<button class="btn btn-sm ${showLinksTab?'btn-primary':''}" data-toggle-media="${e.id}" data-media-type="links">${showLinksTab ? '▼ Hide links' : '🔗 See extra links'}</button>` : ''}
+          </div>
+
+          <!-- Active Collapsible Drawers -->
+          ${showVideoTab ? videoEmbedHtml(e.videoUrl) : ''}
+          ${showPhotoTab ? photosGalleryHtml(e.photoUrls) : ''}
+          ${showLinksTab ? linksListHtml(e.extraLinks) : ''}
+
           ${isIncharge ? (editing ? `
             <div style="margin-top:10px;border-top:1px solid var(--grid);padding-top:10px;">
               <div class="form-group" style="margin-bottom:8px;"><label>Price (₹ per unit)</label><input id="editPrice-${e.id}" type="number" min="0" step="0.01" value="${e.price ?? ''}" /></div>
               <div class="form-group" style="margin-bottom:8px;"><label>Description</label><textarea id="editDesc-${e.id}">${esc(e.description||'')}</textarea></div>
               <div class="form-group" style="margin-bottom:8px;"><label>How to use</label><textarea id="editUsage-${e.id}">${esc(e.usageNotes||'')}</textarea></div>
-              <div class="form-group" style="margin-bottom:8px;"><label>Video link</label><input id="editVideo-${e.id}" type="url" value="${esc(e.videoUrl||'')}" placeholder="YouTube, Drive, or .mp4 link" /></div>
+              <div class="form-group" style="margin-bottom:8px;"><label>Video link</label><input id="editVideo-${e.id}" type="url" value="${esc(e.videoUrl||'')}" /></div>
+              <div class="form-group" style="margin-bottom:8px;"><label>Photo links</label><textarea id="editPhotos-${e.id}">${esc(e.photoUrls||'')}</textarea></div>
+              <div class="form-group" style="margin-bottom:8px;"><label>Extra links</label><textarea id="editLinks-${e.id}">${esc(e.extraLinks||'')}</textarea></div>
               <div style="display:flex;gap:8px;">
                 <button class="btn btn-primary btn-sm" data-save-details="${e.id}">Save</button>
                 <button class="btn btn-sm" data-cancel-edit="${e.id}">Cancel</button>
               </div>
             </div>
           ` : `
-            <div style="margin-top:10px;display:flex;gap:8px;">
+            <div style="margin-top:12px;display:flex;gap:8px;">
               <button class="btn btn-sm" data-edit-details="${e.id}">Edit details</button>
               ${confirming ? `
                 <span style="font-size:12px;color:var(--rust);align-self:center;">Remove ${esc(e.tag)} permanently?</span>
@@ -743,6 +799,20 @@ async function renderInventory(){
       </div>`;
     }).join('') + `</div>`;
     filtered.forEach(e=> renderQR('qr-'+e.id, e.tag, 62));
+
+    // Media Drawer Toggles
+    list.querySelectorAll('[data-toggle-media]').forEach(b=>{
+      b.onclick = ()=>{
+        const eqId = b.dataset.toggleMedia;
+        const type = b.dataset.mediaType;
+        if(activeMediaTabs[eqId] === type){
+          delete activeMediaTabs[eqId];
+        } else {
+          activeMediaTabs[eqId] = type;
+        }
+        drawList();
+      };
+    });
 
     list.querySelectorAll('[data-edit-details]').forEach(b=> b.onclick = ()=>{
       editingDetails.add(b.dataset.editDetails);
@@ -761,6 +831,8 @@ async function renderInventory(){
       eq.description = document.getElementById('editDesc-'+eqId).value.trim();
       eq.usageNotes = document.getElementById('editUsage-'+eqId).value.trim();
       eq.videoUrl = document.getElementById('editVideo-'+eqId).value.trim();
+      eq.photoUrls = document.getElementById('editPhotos-'+eqId).value.trim();
+      eq.extraLinks = document.getElementById('editLinks-'+eqId).value.trim();
       const ok = await saveList(KEYS.equipment, equipment, true);
       if(!ok){ showToast('Could not save — check your connection and try again.', 'error'); return; }
       showToast(`${eq.name} details updated.`, 'ok');
@@ -1249,6 +1321,18 @@ async function lookupAndShow(tagOrId){
         <div style="margin-bottom:14px;">
           <div style="font-size:12px;font-weight:700;color:var(--ink-soft);text-transform:uppercase;letter-spacing:0.03em;margin-bottom:6px;">Video</div>
           ${videoEmbedHtml(eq.videoUrl)}
+        </div>` : ''}
+
+      ${eq.photoUrls ? `
+        <div style="margin-bottom:14px;">
+          <div style="font-size:12px;font-weight:700;color:var(--ink-soft);text-transform:uppercase;letter-spacing:0.03em;margin-bottom:6px;">Photos</div>
+          ${photosGalleryHtml(eq.photoUrls)}
+        </div>` : ''}
+
+      ${eq.extraLinks ? `
+        <div style="margin-bottom:14px;">
+          <div style="font-size:12px;font-weight:700;color:var(--ink-soft);text-transform:uppercase;letter-spacing:0.03em;margin-bottom:6px;">Extra Links</div>
+          ${linksListHtml(eq.extraLinks)}
         </div>` : ''}
 
       ${activeCheckout ? `
