@@ -50,47 +50,44 @@ function fmtDate(ts){
 function esc(s){ return (s||'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function fmtPrice(p){ return (p===null||p===undefined||p==='') ? null : '₹' + Number(p).toLocaleString('en-IN', {maximumFractionDigits:2}); }
 function isSafeUrl(u){ return /^https?:\/\//i.test((u||'').trim()); }
+
+/* ============ Upgraded Video Embed Player Renderer ============ */
 function videoEmbedHtml(url){
   if(!url || !isSafeUrl(url)) return '';
   const clean = url.trim();
+
+  // 1. YouTube links parser
+  const ytMatch = clean.match(/(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/i);
+  if(ytMatch && ytMatch[1]){
+    const videoId = ytMatch[1];
+    return `<div style="position:relative;width:100%;padding-bottom:56.25%;height:0;margin-top:8px;border-radius:8px;overflow:hidden;border:1px solid var(--grid);">
+      <iframe src="https://www.youtube-nocookie.com/embed/${videoId}" title="Equipment Video" style="position:absolute;top:0;left:0;width:100%;height:100%;border:0;" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+    </div>`;
+  }
+
+  // 2. Google Drive preview links parser
+  const gdriveMatch = clean.match(/drive\.google\.com\/file\/d\/([^\/]+)/i);
+  if(gdriveMatch && gdriveMatch[1]){
+    const fileId = gdriveMatch[1];
+    return `<div style="position:relative;width:100%;padding-bottom:56.25%;height:0;margin-top:8px;border-radius:8px;overflow:hidden;border:1px solid var(--grid);">
+      <iframe src="https://drive.google.com/file/d/${fileId}/preview" title="Equipment Video Preview" style="position:absolute;top:0;left:0;width:100%;height:100%;border:0;" allow="autoplay" allowfullscreen></iframe>
+    </div>`;
+  }
+
+  // 3. Direct media files (.mp4, .webm, .ogg)
   const isDirect = /\.(mp4|webm|ogg)(\?.*)?$/i.test(clean);
   if(isDirect){
-    return `<video controls preload="metadata" style="width:100%;max-width:480px;border-radius:8px;border:1px solid var(--grid);margin-top:6px;display:block;">
+    return `<video controls preload="metadata" style="width:100%;max-width:480px;border-radius:8px;border:1px solid var(--grid);margin-top:8px;display:block;">
       <source src="${esc(clean)}" type="video/mp4">
       Your browser can't play this video inline. <a href="${esc(clean)}" target="_blank" rel="noopener">Open it directly</a>.
     </video>`;
   }
-  return `<a class="btn btn-sm" href="${esc(clean)}" target="_blank" rel="noopener">▶ Watch video</a>`;
+
+  // 4. Fallback link button
+  return `<a class="btn btn-sm" href="${esc(clean)}" target="_blank" rel="noopener" style="margin-top:8px;display:inline-block;">▶ Watch video link</a>`;
 }
+
 function hoursBetween(a,b){ return Math.max(0, (b-a)/3600000); }
-
-/* ============ Strict Sustainable Content Validation Engine ============ */
-function containsProfanityOrNonsense(text){
-  if(!text) return true;
-  const clean = text.trim();
-  const lower = clean.toLowerCase();
-
-  const badWords = [
-    'sperm', 'jhonny', 'johnny', 'sins', 'sex', 'porn', 'fuck', 'shit', 'bitch', 
-    'ass', 'damn', 'dick', 'cock', 'pussy', 'bastard', 'chor market', 'bloody', 'randi', 'lund', 'choot'
-  ];
-  for(let word of badWords){
-    if(lower.includes(word)) return true;
-  }
-
-  if(/(.)\1{3,}/.test(lower)) return true;
-
-  const words = clean.split(/\s+/).filter(w => w.length > 1);
-  if(words.length < 2) return true;
-
-  for(let w of words){
-    if(w.length > 5 && !/[aeiouy]/i.test(w)) return true;
-  }
-
-  return false;
-}
-
-/* ============ QR Code Generator with Deep-Link URL Payload ============ */
 function renderQR(elId, text, size){
   const el = document.getElementById(elId);
   if(!el) return;
@@ -118,7 +115,7 @@ const KEYS = {
   clientVersion:'lab:client_version'
 };
 
-const CURRENT_BUILD_VERSION = 'v2.8.8-strict-login-gate';
+const CURRENT_BUILD_VERSION = 'v2.9.2-final-fix';
 
 function buildNav(){
   const nav = [
@@ -152,13 +149,11 @@ async function boot(){
     const data = await res.json();
     currentUser = data.user;
     
-    // Check local storage approval overrides
     const localApprovals = JSON.parse(localStorage.getItem('labtrack_approved_users') || '{}');
     if(localApprovals[currentUser.id]){
        currentUser.status = 'approved';
     }
 
-    // STRICT BOOT GATE: Prevent unapproved accounts from initializing the dashboard
     if(currentUser.status && currentUser.status !== 'approved' && currentUser.role !== 'owner'){
       doLogout(false);
       renderAuthScreen('login', 'Your account is pending approval by your Lab In-Charge or Owner.');
@@ -218,7 +213,7 @@ async function checkAndPublishAutoNotice(){
       const autoUpdateNotice = {
         id: uid(),
         title: `Automated System Update (${CURRENT_BUILD_VERSION})`,
-        desc: 'Enforced strict login and boot verification for pending accounts.',
+        desc: 'Enabled fully integrated video streaming & embedding support for YouTube and Google Drive links.',
         type: 'SYSTEM',
         time: Date.now()
       };
@@ -290,7 +285,6 @@ function renderAuthScreen(mode, errorMsg){
            const localApprovals = JSON.parse(localStorage.getItem('labtrack_approved_users') || '{}');
            const isLocallyApproved = localApprovals[user.id];
            
-           // STRICT LOGIN CHECK: If not approved, stop login and display pending warning popup
            if(user.status !== 'approved' && !isLocallyApproved) {
               renderAuthScreen('login', 'Your account is pending approval by your Lab In-Charge or Owner.');
               showToast('Your account is pending approval by your Lab In-Charge or Owner.', 'error');
@@ -646,7 +640,7 @@ async function renderInventory(){
           <div class="form-group"><label>How to use</label><textarea id="eqUsage" placeholder="Setup steps, safety notes, calibration reminders…"></textarea></div>
         </div>
         <div class="form-row">
-          <div class="form-group"><label>Video link (optional)</label><input id="eqVideo" type="url" placeholder="Direct .mp4 link, or a YouTube/Drive share link" /></div>
+          <div class="form-group"><label>Video link (optional)</label><input id="eqVideo" type="url" placeholder="YouTube, Google Drive, or .mp4 link" /></div>
         </div>
         <button class="btn btn-primary" id="eqSubmit">Add equipment</button>
       ` : `
@@ -722,14 +716,14 @@ async function renderInventory(){
           <span class="badge badge-neutral">${esc(e.location)}</span>
           <div style="margin-top:8px;">Available: <strong class="mono">${e.availableQty} / ${e.totalQty}</strong>${fmtPrice(e.price) ? ` · Price: <strong class="mono">${fmtPrice(e.price)}</strong>` : ''}</div>
           ${e.description ? `<div style="margin-top:6px;color:var(--ink-soft);">${esc(e.description.length>140 ? e.description.slice(0,140)+'…' : e.description)}</div>` : ''}
-          ${e.videoUrl ? `<span class="badge badge-ok" style="margin-top:6px;display:inline-block;">▶ Has video</span>` : ''}
+          ${e.videoUrl ? `<div style="margin-top:8px;"><span class="badge badge-ok">▶ Video attached</span>${videoEmbedHtml(e.videoUrl)}</div>` : ''}
           ${!e.price && !e.description && !e.usageNotes && !e.videoUrl && isIncharge ? `<div style="margin-top:6px;font-size:12px;color:var(--amber);">No price/description/usage/video info yet.</div>` : ''}
           ${isIncharge ? (editing ? `
             <div style="margin-top:10px;border-top:1px solid var(--grid);padding-top:10px;">
               <div class="form-group" style="margin-bottom:8px;"><label>Price (₹ per unit)</label><input id="editPrice-${e.id}" type="number" min="0" step="0.01" value="${e.price ?? ''}" /></div>
               <div class="form-group" style="margin-bottom:8px;"><label>Description</label><textarea id="editDesc-${e.id}">${esc(e.description||'')}</textarea></div>
               <div class="form-group" style="margin-bottom:8px;"><label>How to use</label><textarea id="editUsage-${e.id}">${esc(e.usageNotes||'')}</textarea></div>
-              <div class="form-group" style="margin-bottom:8px;"><label>Video link</label><input id="editVideo-${e.id}" type="url" value="${esc(e.videoUrl||'')}" placeholder="Direct .mp4 link, or a YouTube/Drive share link" /></div>
+              <div class="form-group" style="margin-bottom:8px;"><label>Video link</label><input id="editVideo-${e.id}" type="url" value="${esc(e.videoUrl||'')}" placeholder="YouTube, Drive, or .mp4 link" /></div>
               <div style="display:flex;gap:8px;">
                 <button class="btn btn-primary btn-sm" data-save-details="${e.id}">Save</button>
                 <button class="btn btn-sm" data-cancel-edit="${e.id}">Cancel</button>
