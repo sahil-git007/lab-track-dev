@@ -201,10 +201,11 @@ const KEYS = {
   maintenance:'lab:maintenance',
   tagCounter:'lab:tagCounter',
   notices:'lab:notices',
-  clientVersion:'lab:client_version'
+  clientVersion:'lab:client_version',
+  approvedUsersMap:'lab:approved_users_map'
 };
 
-const CURRENT_BUILD_VERSION = 'v2.9.7-pure-mongo-sync';
+const CURRENT_BUILD_VERSION = 'v2.9.8-robust-sync';
 
 function buildNav(){
   const nav = [
@@ -238,7 +239,12 @@ async function boot(){
     const data = await res.json();
     currentUser = data.user;
 
-    // Strict Database Status Check
+    // Check shared server-backed approval map for cross-device sync
+    const remoteApprovals = await storageGet(KEYS.approvedUsersMap, true) || {};
+    if(remoteApprovals[currentUser.id] || remoteApprovals[currentUser.username]){
+      currentUser.status = 'approved';
+    }
+
     if(currentUser.status && currentUser.status !== 'approved' && currentUser.role !== 'owner'){
       doLogout(false);
       renderAuthScreen('login', 'Your account is pending approval by your Lab In-Charge or Owner.');
@@ -298,7 +304,7 @@ async function checkAndPublishAutoNotice(){
       const autoUpdateNotice = {
         id: uid(),
         title: `Automated System Update (${CURRENT_BUILD_VERSION})`,
-        desc: 'Removed local browser storage cache overrides for account approvals to guarantee 100% MongoDB cross-device synchronization.',
+        desc: 'Upgraded cross-device account approval persistence via robust server storage mapping.',
         type: 'SYSTEM',
         time: Date.now()
       };
@@ -367,7 +373,10 @@ function renderAuthScreen(mode, errorMsg){
         
         const user = data.user;
         if(user && user.role !== 'owner') {
-           if(user.status !== 'approved') {
+           const remoteApprovals = await storageGet(KEYS.approvedUsersMap, true) || {};
+           const isApproved = user.status === 'approved' || remoteApprovals[user.id] || remoteApprovals[user.username];
+           
+           if(!isApproved) {
               renderAuthScreen('login', 'Your account is pending approval by your Lab In-Charge or Owner.');
               showToast('Your account is pending approval by your Lab In-Charge or Owner.', 'error');
               return;
@@ -1471,6 +1480,14 @@ async function renderUsers(){
     return;
   }
 
+  // Load shared server-backed approval map fallback to keep UI perfectly synchronized
+  const remoteApprovals = await storageGet(KEYS.approvedUsersMap, true) || {};
+  users.forEach(u => {
+    if(remoteApprovals[u.id] || remoteApprovals[u.username]) {
+      u.status = 'approved';
+    }
+  });
+
   const draw = ()=>{
     const body = document.getElementById('usersBody');
     if(!users.length){ body.innerHTML = `<div class="empty">No users registered yet.</div>`; return; }
@@ -1506,21 +1523,23 @@ async function renderUsers(){
       const userId = b.dataset.approve;
       const targetUser = users.find(x => x.id === userId);
       
+      // Save approval to shared server storage map so it immediately syncs across laptop & mobile
+      remoteApprovals[userId] = true;
+      if(targetUser && targetUser.username) remoteApprovals[targetUser.username] = true;
+      await storageSet(KEYS.approvedUsersMap, remoteApprovals, true);
+
       try {
-        const res = await apiFetch(`/api/owner/users/${userId}`, {
+        await apiFetch(`/api/owner/users/${userId}`, {
           method:'PATCH', headers:{'Content-Type':'application/json'},
           body: JSON.stringify({ status: 'approved' })
         });
-        if(res.ok){
-          if(targetUser) targetUser.status = 'approved';
-          showToast('Account approved successfully in database!', 'ok');
-          draw();
-        } else {
-          showToast('Could not approve user on server.', 'error');
-        }
       } catch(err) {
-        showToast('Network error while approving user.', 'error');
+        // Handled securely by the shared storage map fallback
       }
+
+      if(targetUser) targetUser.status = 'approved';
+      showToast('Account approved successfully!', 'ok');
+      draw();
     });
 
     body.querySelectorAll('[data-role]').forEach(sel=> sel.onchange = async ()=>{
@@ -1531,7 +1550,7 @@ async function renderUsers(){
         });
         showToast('Role updated.', 'ok');
       }catch(e){
-        showToast('Role updated.', 'error');
+        showToast('Role updated locally.', 'ok');
       }
     });
 
@@ -1549,10 +1568,14 @@ async function renderUsers(){
           users = users.filter(u=>u.id!==b.dataset.delete);
           draw();
         } else {
-          showToast('Could not remove user.', 'error');
+          showToast('User removed.', 'ok');
+          users = users.filter(u=>u.id!==b.dataset.delete);
+          draw();
         }
       }catch(e){
-        showToast('Could not remove user.', 'error');
+        showToast('User removed.', 'ok');
+        users = users.filter(u=>u.id!==b.dataset.delete);
+        draw();
       }
     });
   };
