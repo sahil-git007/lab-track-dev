@@ -51,6 +51,32 @@ function esc(s){ return (s||'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;',
 function fmtPrice(p){ return (p===null||p===undefined||p==='') ? null : '₹' + Number(p).toLocaleString('en-IN', {maximumFractionDigits:2}); }
 function isSafeUrl(u){ return /^https?:\/\//i.test((u||'').trim()); }
 
+/* ============ Strict Sustainable Content Validation Engine ============ */
+function containsProfanityOrNonsense(text){
+  if(!text) return true;
+  const clean = text.trim();
+  const lower = clean.toLowerCase();
+
+  const badWords = [
+    'sperm', 'jhonny', 'johnny', 'sins', 'sex', 'porn', 'fuck', 'shit', 'bitch', 
+    'ass', 'damn', 'dick', 'cock', 'pussy', 'bastard', 'chor market', 'bloody', 'randi', 'lund', 'choot'
+  ];
+  for(let word of badWords){
+    if(lower.includes(word)) return true;
+  }
+
+  if(/(.)\1{3,}/.test(lower)) return true;
+
+  const words = clean.split(/\s+/).filter(w => w.length > 1);
+  if(words.length < 2) return true;
+
+  for(let w of words){
+    if(w.length > 5 && !/[aeiouy]/i.test(w)) return true;
+  }
+
+  return false;
+}
+
 /* ============ Media & Attachment Renderers ============ */
 function videoEmbedHtml(url){
   if(!url || !isSafeUrl(url)) return '';
@@ -178,7 +204,7 @@ const KEYS = {
   clientVersion:'lab:client_version'
 };
 
-const CURRENT_BUILD_VERSION = 'v2.9.5-db-approval-sync';
+const CURRENT_BUILD_VERSION = 'v2.9.7-pure-mongo-sync';
 
 function buildNav(){
   const nav = [
@@ -212,7 +238,7 @@ async function boot(){
     const data = await res.json();
     currentUser = data.user;
 
-    // Strict Database Status Check (No fragile localStorage bypass)
+    // Strict Database Status Check
     if(currentUser.status && currentUser.status !== 'approved' && currentUser.role !== 'owner'){
       doLogout(false);
       renderAuthScreen('login', 'Your account is pending approval by your Lab In-Charge or Owner.');
@@ -272,7 +298,7 @@ async function checkAndPublishAutoNotice(){
       const autoUpdateNotice = {
         id: uid(),
         title: `Automated System Update (${CURRENT_BUILD_VERSION})`,
-        desc: 'Synchronized account approval status directly with the backend database for seamless multi-device sign-in.',
+        desc: 'Removed local browser storage cache overrides for account approvals to guarantee 100% MongoDB cross-device synchronization.',
         type: 'SYSTEM',
         time: Date.now()
       };
@@ -1445,11 +1471,6 @@ async function renderUsers(){
     return;
   }
 
-  const localApprovals = JSON.parse(localStorage.getItem('labtrack_approved_users') || '{}');
-  users.forEach(u => {
-    if(localApprovals[u.id]) u.status = 'approved';
-  });
-
   const draw = ()=>{
     const body = document.getElementById('usersBody');
     if(!users.length){ body.innerHTML = `<div class="empty">No users registered yet.</div>`; return; }
@@ -1485,21 +1506,20 @@ async function renderUsers(){
       const userId = b.dataset.approve;
       const targetUser = users.find(x => x.id === userId);
       
-      const currentCache = JSON.parse(localStorage.getItem('labtrack_approved_users') || '{}');
-      currentCache[userId] = true;
-      localStorage.setItem('labtrack_approved_users', JSON.stringify(currentCache));
-
-      if(targetUser) targetUser.status = 'approved';
-      showToast('Account approved successfully!', 'ok');
-      draw();
-
       try {
-        await apiFetch(`/api/owner/users/${userId}`, {
+        const res = await apiFetch(`/api/owner/users/${userId}`, {
           method:'PATCH', headers:{'Content-Type':'application/json'},
           body: JSON.stringify({ status: 'approved' })
         });
+        if(res.ok){
+          if(targetUser) targetUser.status = 'approved';
+          showToast('Account approved successfully in database!', 'ok');
+          draw();
+        } else {
+          showToast('Could not approve user on server.', 'error');
+        }
       } catch(err) {
-        // Silently handled by local persistent cache fallback
+        showToast('Network error while approving user.', 'error');
       }
     });
 
@@ -1511,7 +1531,7 @@ async function renderUsers(){
         });
         showToast('Role updated.', 'ok');
       }catch(e){
-        showToast('Role updated locally.', 'ok');
+        showToast('Role updated.', 'error');
       }
     });
 
@@ -1523,14 +1543,16 @@ async function renderUsers(){
         return;
       }
       try {
-        await apiFetch(`/api/owner/users/${b.dataset.delete}`, { method:'DELETE' });
-        showToast('User removed.', 'ok');
-        users = users.filter(u=>u.id!==b.dataset.delete);
-        draw();
+        const res = await apiFetch(`/api/owner/users/${b.dataset.delete}`, { method:'DELETE' });
+        if(res.ok){
+          showToast('User removed.', 'ok');
+          users = users.filter(u=>u.id!==b.dataset.delete);
+          draw();
+        } else {
+          showToast('Could not remove user.', 'error');
+        }
       }catch(e){
-        showToast('User removed.', 'ok');
-        users = users.filter(u=>u.id!==b.dataset.delete);
-        draw();
+        showToast('Could not remove user.', 'error');
       }
     });
   };
