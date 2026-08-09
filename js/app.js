@@ -205,7 +205,7 @@ const KEYS = {
   approvedUsersMap:'lab:approved_users_map'
 };
 
-const CURRENT_BUILD_VERSION = 'v3.0.4-return-sync-fix';
+const CURRENT_BUILD_VERSION = 'v3.0.5-editable-quantity';
 
 function buildNav(){
   const nav = [
@@ -303,7 +303,7 @@ async function checkAndPublishAutoNotice(){
       const autoUpdateNotice = {
         id: uid(),
         title: `Automated System Update (${CURRENT_BUILD_VERSION})`,
-        desc: 'Fixed equipment return synchronization bug to instantly restore available stock upon return.',
+        desc: 'Added editable total and available stock quantity controls to equipment management details.',
         type: 'SYSTEM',
         time: Date.now()
       };
@@ -833,6 +833,10 @@ async function renderInventory(){
 
           ${isIncharge ? (editing ? `
             <div style="margin-top:10px;border-top:1px solid var(--grid);padding-top:10px;">
+              <div class="form-row" style="margin-bottom:8px;">
+                <div class="form-group"><label>Total Quantity</label><input id="editTotalQty-${e.id}" type="number" min="1" value="${e.totalQty ?? 1}" /></div>
+                <div class="form-group"><label>Available Quantity</label><input id="editAvailQty-${e.id}" type="number" min="0" value="${e.availableQty ?? 1}" /></div>
+              </div>
               <div class="form-group" style="margin-bottom:8px;"><label>Price (₹ per unit)</label><input id="editPrice-${e.id}" type="number" min="0" step="0.01" value="${e.price ?? ''}" /></div>
               <div class="form-group" style="margin-bottom:8px;"><label>Description</label><textarea id="editDesc-${e.id}">${esc(e.description||'')}</textarea></div>
               <div class="form-group" style="margin-bottom:8px;"><label>How to use</label><textarea id="editUsage-${e.id}">${esc(e.usageNotes||'')}</textarea></div>
@@ -846,7 +850,7 @@ async function renderInventory(){
             </div>
           ` : `
             <div style="margin-top:12px;display:flex;gap:8px;">
-              <button class="btn btn-sm" data-edit-details="${e.id}">Edit details</button>
+              <button class="btn btn-sm" data-edit-details="${e.id}">Edit details & quantity</button>
               ${confirming ? `
                 <span style="font-size:12px;color:var(--rust);align-self:center;">Remove ${esc(e.tag)} permanently?</span>
                 <button class="btn btn-sm" style="border-color:var(--rust);color:var(--rust);" data-confirm-remove="${e.id}">Confirm</button>
@@ -885,20 +889,23 @@ async function renderInventory(){
       if(!requireIncharge()) return;
       const eqId = b.dataset.saveDetails;
       const eq = equipment.find(x=>x.id===eqId);
+      
+      const newTotal = parseInt(document.getElementById('editTotalQty-'+eqId).value) || 1;
+      const newAvail = parseInt(document.getElementById('editAvailQty-'+eqId).value) || 0;
       const priceVal = document.getElementById('editPrice-'+eqId).value;
+
+      eq.totalQty = newTotal;
+      eq.availableQty = Math.min(newTotal, Math.max(0, newAvail));
       eq.price = priceVal ? parseFloat(priceVal) : null;
       eq.description = document.getElementById('editDesc-'+eqId).value.trim();
       eq.usageNotes = document.getElementById('editUsage-'+eqId).value.trim();
       eq.videoUrl = document.getElementById('editVideo-'+eqId).value.trim();
       eq.photoUrls = document.getElementById('editPhotos-'+eqId).value.trim();
       eq.extraLinks = document.getElementById('editLinks-'+eqId).value.trim();
-      
-      // Auto-fix available quantity if stock was stuck
-      if(eq.availableQty < 1 && eq.totalQty > 0) eq.availableQty = eq.totalQty;
 
       const ok = await saveList(KEYS.equipment, equipment, true);
       if(!ok){ showToast('Could not save — check your connection and try again.', 'error'); return; }
-      showToast(`${eq.name} details updated and stock reset!`, 'ok');
+      showToast(`${eq.name} details and quantity updated successfully!`, 'ok');
       editingDetails.delete(eqId);
       drawList();
     });
@@ -949,19 +956,6 @@ async function renderInventory(){
 async function renderCheckout(){
   const [equipment, checkouts] = await Promise.all([loadList(KEYS.equipment,true), loadList(KEYS.checkouts,true)]);
   
-  // Auto-fix stuck available quantities across all equipment items
-  let stockChanged = false;
-  equipment.forEach(e => {
-    const hasActiveCheckout = checkouts.some(c => c.equipmentId === e.id && c.status === 'Active');
-    if(!hasActiveCheckout && e.availableQty < e.totalQty){
-      e.availableQty = e.totalQty;
-      stockChanged = true;
-    }
-  });
-  if(stockChanged){
-    await saveList(KEYS.equipment, equipment, true);
-  }
-
   const main = document.getElementById('main');
   const available = equipment.filter(e=>e.availableQty>0 && e.condition==='Good');
   main.innerHTML = `
