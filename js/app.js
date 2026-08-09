@@ -219,7 +219,7 @@ const KEYS = {
   approvedUsersMap:'lab:approved_users_map'
 };
 
-const CURRENT_BUILD_VERSION = 'v3.0.8-instant-approval-fix';
+const CURRENT_BUILD_VERSION = 'v3.0.9-universal-login-bypass';
 
 function buildNav(){
   const nav = [
@@ -317,7 +317,7 @@ async function checkAndPublishAutoNotice(){
       const autoUpdateNotice = {
         id: uid(),
         title: `Automated System Update (${CURRENT_BUILD_VERSION})`,
-        desc: 'Optimized user account approval verification check for instant login access.',
+        desc: 'Universal login approval verification patch applied.',
         type: 'SYSTEM',
         time: Date.now()
       };
@@ -1720,6 +1720,7 @@ async function renderUsers(){
       
       remoteApprovals[userId] = true;
       if(targetUser){
+        if(targetUser.id) remoteApprovals[targetUser.id] = true;
         if(targetUser.username) remoteApprovals[targetUser.username] = true;
         if(targetUser.collegeEmail) remoteApprovals[targetUser.collegeEmail] = true;
       }
@@ -1736,7 +1737,6 @@ async function renderUsers(){
 
       if(targetUser) targetUser.status = 'approved';
       
-      // Send notification to the newly approved user
       if(targetUser && targetUser.id){
         await sendPersonalNotification(targetUser.id, 'Account Approved', 'Your account has been approved by the Owner. You can now sign in successfully!');
       }
