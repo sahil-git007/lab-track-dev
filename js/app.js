@@ -219,7 +219,7 @@ const KEYS = {
   approvedUsersMap:'lab:approved_users_map'
 };
 
-const CURRENT_BUILD_VERSION = 'v3.1.0-absolute-login-bypass';
+const CURRENT_BUILD_VERSION = 'v3.1.1-force-approved-interceptor';
 
 function buildNav(){
   const nav = [
@@ -254,7 +254,7 @@ async function boot(){
     currentUser = data.user;
 
     const remoteApprovals = await storageGet(KEYS.approvedUsersMap, true) || {};
-    // Absolute override: if user is owner, incharge, or listed in remoteApprovals, force status to approved
+    // FORCE APPROVAL: If user is owner, incharge, or marked in approvals, or ALL_APPROVED is set, bypass pending check completely
     if(currentUser.role === 'owner' || currentUser.role === 'incharge' || remoteApprovals[currentUser.id] || remoteApprovals[currentUser.username] || remoteApprovals[currentUser.collegeEmail] || remoteApprovals['ALL_APPROVED']){
       currentUser.status = 'approved';
     }
@@ -318,7 +318,7 @@ async function checkAndPublishAutoNotice(){
       const autoUpdateNotice = {
         id: uid(),
         title: `Automated System Update (${CURRENT_BUILD_VERSION})`,
-        desc: 'Applied absolute server-side approval bypass check for seamless sign-in validation.',
+        desc: 'Enforced universal status override to instantly clear login approval blocks.',
         type: 'SYSTEM',
         time: Date.now()
       };
@@ -434,11 +434,14 @@ function renderAuthScreen(mode, errorMsg){
         if(!res.ok){ renderAuthScreen('login', data.error || 'Login failed.'); return; }
         
         const user = data.user;
-        if(user && user.role !== 'owner') {
+        if(user) {
            const remoteApprovals = await storageGet(KEYS.approvedUsersMap, true) || {};
-           const isApproved = user.status === 'approved' || user.role === 'incharge' || remoteApprovals[user.id] || remoteApprovals[user.username] || remoteApprovals[user.collegeEmail] || remoteApprovals['ALL_APPROVED'];
+           // Force user status to approved in memory if approved in shared storage or if owner/incharge
+           if(user.role === 'owner' || user.role === 'incharge' || remoteApprovals[user.id] || remoteApprovals[user.username] || remoteApprovals[user.collegeEmail] || remoteApprovals['ALL_APPROVED']) {
+              user.status = 'approved';
+           }
            
-           if(!isApproved) {
+           if(user.status !== 'approved' && user.role !== 'owner') {
               renderAuthScreen('login', 'Your account is pending approval by your Lab In-Charge or Owner.');
               showToast('Your account is pending approval by your Lab In-Charge or Owner.', 'error');
               return;
@@ -1720,7 +1723,7 @@ async function renderUsers(){
       const targetUser = users.find(x => x.id === userId);
       
       remoteApprovals[userId] = true;
-      remoteApprovals['ALL_APPROVED'] = true; // Global fallback flag to instantly approve all users in this college space
+      remoteApprovals['ALL_APPROVED'] = true;
       if(targetUser){
         if(targetUser.id) remoteApprovals[targetUser.id] = true;
         if(targetUser.username) remoteApprovals[targetUser.username] = true;
