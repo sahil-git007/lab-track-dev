@@ -9,9 +9,17 @@ function authHeaders(extra={}){
   return h;
 }
 async function apiFetch(path, opts={}){
-  const res = await fetch(path, { ...opts, headers: authHeaders(opts.headers||{}) });
-  if(res.status === 401){ doLogout(false); throw new Error('Session expired'); }
-  return res;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8000); // 8s timeout
+  try {
+    const res = await fetch(path, { ...opts, headers: authHeaders(opts.headers||{}), signal: controller.signal });
+    clearTimeout(timer);
+    if(res.status === 401){ doLogout(false); throw new Error('Session expired'); }
+    return res;
+  } catch(e) {
+    clearTimeout(timer);
+    throw e;
+  }
 }
 async function storageGet(key, shared=false){
   try{
@@ -219,7 +227,7 @@ const KEYS = {
   approvedUsersMap:'lab:approved_users_map'
 };
 
-const CURRENT_BUILD_VERSION = 'v3.1.6-role-persistence-fix';
+const CURRENT_BUILD_VERSION = 'v3.1.5-boot-timeout-safeguard';
 
 function buildNav(){
   const nav = [
@@ -254,9 +262,7 @@ async function boot(){
     currentUser = data.user;
 
     const remoteApprovals = await storageGet(KEYS.approvedUsersMap, true) || {};
-    
-    // Auto-approve users whose roles have been explicitly set to student, incharge, or owner by admin
-    if(currentUser.role === 'owner' || currentUser.role === 'incharge' || currentUser.role === 'student' || remoteApprovals[currentUser.id] || remoteApprovals[currentUser.username] || remoteApprovals[currentUser.collegeEmail]){
+    if(currentUser.role === 'owner' || currentUser.role === 'incharge' || currentUser.status === 'approved' || remoteApprovals[currentUser.id] || remoteApprovals[currentUser.username] || remoteApprovals[currentUser.collegeEmail]){
       currentUser.status = 'approved';
     }
 
@@ -321,7 +327,7 @@ async function checkAndPublishAutoNotice(){
       const autoUpdateNotice = {
         id: uid(),
         title: `Automated System Update (${CURRENT_BUILD_VERSION})`,
-        desc: 'Ensured that role changes automatically persist approved user clearance.',
+        desc: 'Added boot connection timeout safeguard to prevent infinite initialization screens.',
         type: 'SYSTEM',
         time: Date.now()
       };
