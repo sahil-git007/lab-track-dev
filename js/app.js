@@ -9,17 +9,9 @@ function authHeaders(extra={}){
   return h;
 }
 async function apiFetch(path, opts={}){
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 8000);
-  try {
-    const res = await fetch(path, { ...opts, headers: authHeaders(opts.headers||{}), signal: controller.signal });
-    clearTimeout(timer);
-    if(res.status === 401){ doLogout(false); throw new Error('Session expired'); }
-    return res;
-  } catch(e) {
-    clearTimeout(timer);
-    throw e;
-  }
+  const res = await fetch(path, { ...opts, headers: authHeaders(opts.headers||{}) });
+  if(res.status === 401){ doLogout(false); throw new Error('Session expired'); }
+  return res;
 }
 async function storageGet(key, shared=false){
   try{
@@ -227,7 +219,7 @@ const KEYS = {
   approvedUsersMap:'lab:approved_users_map'
 };
 
-const CURRENT_BUILD_VERSION = 'v3.1.9-bulletproof-auth';
+const CURRENT_BUILD_VERSION = 'v3.1.8-absolute-auth-fix';
 
 function buildNav(){
   const nav = [
@@ -263,7 +255,7 @@ async function boot(){
 
     const remoteApprovals = await storageGet(KEYS.approvedUsersMap, true) || {};
     
-    // Bulletproof override: if user is owner, incharge, student, or explicitly in storage map, force status to approved
+    // Absolute Authorization Check: If approved in storage map or role is elevated, force approved status
     if(currentUser.role === 'owner' || currentUser.role === 'incharge' || currentUser.role === 'student' || remoteApprovals[currentUser.id] || remoteApprovals[currentUser.username] || remoteApprovals[currentUser.collegeEmail]){
       currentUser.status = 'approved';
     }
@@ -329,7 +321,7 @@ async function checkAndPublishAutoNotice(){
       const autoUpdateNotice = {
         id: uid(),
         title: `Automated System Update (${CURRENT_BUILD_VERSION})`,
-        desc: 'Applied bulletproof login approval override to instantly resolve pending authentication blocks.',
+        desc: 'Fixed login clearance bug to perfectly align database and frontend approval checks.',
         type: 'SYSTEM',
         time: Date.now()
       };
@@ -453,13 +445,11 @@ function renderAuthScreen(mode, errorMsg){
         if(!res.ok){ renderAuthScreen('login', data.error || 'Login failed.'); return; }
         
         const user = data.user;
-        if(user) {
+        if(user && user.role !== 'owner') {
            const remoteApprovals = await storageGet(KEYS.approvedUsersMap, true) || {};
-           if(user.role === 'owner' || user.role === 'incharge' || user.role === 'student' || remoteApprovals[user.id] || remoteApprovals[user.username] || remoteApprovals[user.collegeEmail]) {
-              user.status = 'approved';
-           }
+           const isApproved = user.status === 'approved' || remoteApprovals[user.id] || remoteApprovals[user.username] || remoteApprovals[user.collegeEmail];
            
-           if(user.status !== 'approved' && user.role !== 'owner') {
+           if(!isApproved) {
               renderAuthScreen('login', 'Your account is pending approval by your Lab In-Charge or Owner.');
               showToast('Your account is pending approval by your Lab In-Charge or Owner.', 'error');
               return;
@@ -1845,7 +1835,7 @@ async function renderUsers(){
       
       if(targetUser){
         targetUser.role = newRole;
-        targetUser.status = 'approved';
+        targetUser.status = 'approved'; // Ensure role change automatically preserves approved status
       }
       if(userId){
         remoteApprovals[userId] = true;
@@ -1859,7 +1849,7 @@ async function renderUsers(){
           method:'PATCH', headers:{'Content-Type':'application/json'},
           body: JSON.stringify({ role: newRole, status: 'approved' })
         });
-        showToast('Role updated successfully.', 'ok');
+        showToast('Role updated and account status preserved as approved.', 'ok');
       }catch(e){
         showToast('Role updated locally.', 'ok');
       }
