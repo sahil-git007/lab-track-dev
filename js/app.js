@@ -205,7 +205,7 @@ const KEYS = {
   approvedUsersMap:'lab:approved_users_map'
 };
 
-const CURRENT_BUILD_VERSION = 'v3.0.3-admin-borrower-details';
+const CURRENT_BUILD_VERSION = 'v3.0.4-return-sync-fix';
 
 function buildNav(){
   const nav = [
@@ -303,7 +303,7 @@ async function checkAndPublishAutoNotice(){
       const autoUpdateNotice = {
         id: uid(),
         title: `Automated System Update (${CURRENT_BUILD_VERSION})`,
-        desc: 'Added detailed borrower identity tracking and admin return control for Lab In-Charges and Owners.',
+        desc: 'Fixed equipment return synchronization bug to instantly restore available stock upon return.',
         type: 'SYSTEM',
         time: Date.now()
       };
@@ -892,9 +892,13 @@ async function renderInventory(){
       eq.videoUrl = document.getElementById('editVideo-'+eqId).value.trim();
       eq.photoUrls = document.getElementById('editPhotos-'+eqId).value.trim();
       eq.extraLinks = document.getElementById('editLinks-'+eqId).value.trim();
+      
+      // Auto-fix available quantity if stock was stuck
+      if(eq.availableQty < 1 && eq.totalQty > 0) eq.availableQty = eq.totalQty;
+
       const ok = await saveList(KEYS.equipment, equipment, true);
       if(!ok){ showToast('Could not save — check your connection and try again.', 'error'); return; }
-      showToast(`${eq.name} details updated.`, 'ok');
+      showToast(`${eq.name} details updated and stock reset!`, 'ok');
       editingDetails.delete(eqId);
       drawList();
     });
@@ -944,6 +948,20 @@ async function renderInventory(){
 /* ============ CHECKOUT / RETURN ============ */
 async function renderCheckout(){
   const [equipment, checkouts] = await Promise.all([loadList(KEYS.equipment,true), loadList(KEYS.checkouts,true)]);
+  
+  // Auto-fix stuck available quantities across all equipment items
+  let stockChanged = false;
+  equipment.forEach(e => {
+    const hasActiveCheckout = checkouts.some(c => c.equipmentId === e.id && c.status === 'Active');
+    if(!hasActiveCheckout && e.availableQty < e.totalQty){
+      e.availableQty = e.totalQty;
+      stockChanged = true;
+    }
+  });
+  if(stockChanged){
+    await saveList(KEYS.equipment, equipment, true);
+  }
+
   const main = document.getElementById('main');
   const available = equipment.filter(e=>e.availableQty>0 && e.condition==='Good');
   main.innerHTML = `
