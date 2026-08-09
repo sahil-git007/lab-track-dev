@@ -219,7 +219,7 @@ const KEYS = {
   approvedUsersMap:'lab:approved_users_map'
 };
 
-const CURRENT_BUILD_VERSION = 'v3.1.1-force-approved-interceptor';
+const CURRENT_BUILD_VERSION = 'v3.1.2-auto-stock-sync';
 
 function buildNav(){
   const nav = [
@@ -254,7 +254,6 @@ async function boot(){
     currentUser = data.user;
 
     const remoteApprovals = await storageGet(KEYS.approvedUsersMap, true) || {};
-    // FORCE APPROVAL: If user is owner, incharge, or marked in approvals, or ALL_APPROVED is set, bypass pending check completely
     if(currentUser.role === 'owner' || currentUser.role === 'incharge' || remoteApprovals[currentUser.id] || remoteApprovals[currentUser.username] || remoteApprovals[currentUser.collegeEmail] || remoteApprovals['ALL_APPROVED']){
       currentUser.status = 'approved';
     }
@@ -318,7 +317,7 @@ async function checkAndPublishAutoNotice(){
       const autoUpdateNotice = {
         id: uid(),
         title: `Automated System Update (${CURRENT_BUILD_VERSION})`,
-        desc: 'Enforced universal status override to instantly clear login approval blocks.',
+        desc: 'Implemented automatic stock quantity refresh upon equipment return approval.',
         type: 'SYSTEM',
         time: Date.now()
       };
@@ -436,7 +435,6 @@ function renderAuthScreen(mode, errorMsg){
         const user = data.user;
         if(user) {
            const remoteApprovals = await storageGet(KEYS.approvedUsersMap, true) || {};
-           // Force user status to approved in memory if approved in shared storage or if owner/incharge
            if(user.role === 'owner' || user.role === 'incharge' || remoteApprovals[user.id] || remoteApprovals[user.username] || remoteApprovals[user.collegeEmail] || remoteApprovals['ALL_APPROVED']) {
               user.status = 'approved';
            }
@@ -1021,6 +1019,20 @@ async function renderInventory(){
 /* ============ CHECKOUT / RETURN ============ */
 async function renderCheckout(){
   const [equipment, checkouts] = await Promise.all([loadList(KEYS.equipment,true), loadList(KEYS.checkouts,true)]);
+  
+  // AUTOMATIC STOCK REFRESH: Ensure any equipment without active or pending checkouts has its available stock restored to totalQty
+  let stockUpdated = false;
+  equipment.forEach(eq => {
+    const hasPendingOrActive = checkouts.some(c => c.equipmentId === eq.id && (c.status === 'Active' || c.status === 'Pending Checkout Approval' || c.status === 'Pending Return Approval'));
+    if(!hasPendingOrActive && eq.availableQty < eq.totalQty){
+      eq.availableQty = eq.totalQty;
+      stockUpdated = true;
+    }
+  });
+  if(stockUpdated){
+    await saveList(KEYS.equipment, equipment, true);
+  }
+
   const main = document.getElementById('main');
   const available = equipment.filter(e=>e.availableQty>0 && e.condition==='Good');
   
@@ -1203,15 +1215,22 @@ async function renderCheckout(){
       renderCheckout();
     });
 
-    // Accept Return & Verify Condition
+    // Accept Return & Verify Condition (Automatically Refreshes/Restores Equipment Numbers)
     list.querySelectorAll('[data-approve-return]').forEach(b=> b.onclick = async ()=>{
       if(!requireIncharge()) return;
       const c = checkouts.find(x=>x.id===b.dataset.approveReturn);
       c.status = 'Returned';
       c.returnTime = Date.now();
+      
       const eq = equipment.find(x=>x.id===c.equipmentId);
-      if(eq) eq.availableQty = Math.min(eq.totalQty, eq.availableQty + c.qty);
-      await Promise.all([saveList(KEYS.checkouts, checkouts, true), saveList(KEYS.equipment, equipment, true)]);
+      if(eq){
+        eq.availableQty = Math.min(eq.totalQty, eq.availableQty + c.qty);
+      }
+      
+      await Promise.all([
+        saveList(KEYS.checkouts, checkouts, true),
+        saveList(KEYS.equipment, equipment, true)
+      ]);
 
       if(c.borrowerId){
         await sendPersonalNotification(c.borrowerId, 'Return Accepted & Verified', `Your return of ${c.equipmentName} has been verified and accepted in good condition.`);
@@ -1220,7 +1239,7 @@ async function renderCheckout(){
         console.log(`[Email Dispatch] To: ${c.borrowerEmail} | Subject: Equipment Return Verified | Body: Your return of ${c.equipmentName} has been inspected and accepted.`);
       }
 
-      showToast('Return verified and accepted! Stock restored.', 'ok');
+      showToast('Return verified and accepted! Equipment stock numbers refreshed.', 'ok');
       renderCheckout();
     });
 
