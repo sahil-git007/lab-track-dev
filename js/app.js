@@ -219,7 +219,7 @@ const KEYS = {
   approvedUsersMap:'lab:approved_users_map'
 };
 
-const CURRENT_BUILD_VERSION = 'v3.1.7-robust-role-approval';
+const CURRENT_BUILD_VERSION = 'v3.1.6-role-persistence-fix';
 
 function buildNav(){
   const nav = [
@@ -255,7 +255,7 @@ async function boot(){
 
     const remoteApprovals = await storageGet(KEYS.approvedUsersMap, true) || {};
     
-    // Robust check: If user is owner, incharge, student, or explicitly in approvals, ensure approved status
+    // Auto-approve users whose roles have been explicitly set to student, incharge, or owner by admin
     if(currentUser.role === 'owner' || currentUser.role === 'incharge' || currentUser.role === 'student' || remoteApprovals[currentUser.id] || remoteApprovals[currentUser.username] || remoteApprovals[currentUser.collegeEmail]){
       currentUser.status = 'approved';
     }
@@ -321,7 +321,7 @@ async function checkAndPublishAutoNotice(){
       const autoUpdateNotice = {
         id: uid(),
         title: `Automated System Update (${CURRENT_BUILD_VERSION})`,
-        desc: 'Ensured that role changes and manual approvals persist correctly without pending blocks.',
+        desc: 'Ensured that role changes automatically persist approved user clearance.',
         type: 'SYSTEM',
         time: Date.now()
       };
