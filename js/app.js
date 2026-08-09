@@ -205,7 +205,7 @@ const KEYS = {
   approvedUsersMap:'lab:approved_users_map'
 };
 
-const CURRENT_BUILD_VERSION = 'v3.0.2-admin-return-privilege';
+const CURRENT_BUILD_VERSION = 'v3.0.3-admin-borrower-details';
 
 function buildNav(){
   const nav = [
@@ -303,7 +303,7 @@ async function checkAndPublishAutoNotice(){
       const autoUpdateNotice = {
         id: uid(),
         title: `Automated System Update (${CURRENT_BUILD_VERSION})`,
-        desc: 'Granted Lab In-Charge and Owner privileges to mark active checkouts returned on behalf of any user.',
+        desc: 'Added detailed borrower identity tracking and admin return control for Lab In-Charges and Owners.',
         type: 'SYSTEM',
         time: Date.now()
       };
@@ -1025,7 +1025,7 @@ async function renderCheckout(){
           Borrower: <strong>${esc(c.borrower)}</strong> · Out: ${fmtTime(c.checkoutTime)}
           ${c.dueTime? ' · Due: '+fmtTime(c.dueTime):''}
           ${c.returnTime? ' · Returned: '+fmtTime(c.returnTime):''}
-          ${canReturn? `<div style="margin-top:8px;"><button class="btn btn-sm" data-return="${c.id}">${profileRole==='owner' || profileRole==='incharge' && c.status==='Active' ? 'Admin Return' : 'Mark returned'}</button></div>`:''}
+          ${canReturn? `<div style="margin-top:8px;"><button class="btn btn-sm" data-return="${c.id}">${profileRole==='owner' || profileRole==='incharge' ? 'Admin Return' : 'Mark returned'}</button></div>`:''}
         </div>
       </div>`;
     }).join('');
@@ -1555,10 +1555,10 @@ async function renderUsers(){
     });
 
     body.querySelectorAll('[data-delete]').forEach(b=> b.onclick = async ()=>{
-      if(b.dataset.confirming!=='1'){
-        b.dataset.confirming = '1';
+      b.dataset.confirming = b.dataset.confirming === '1' ? '2' : '1';
+      if(b.dataset.confirming === '1'){
         b.textContent = 'Confirm remove?';
-        setTimeout(()=>{ if(b.dataset.confirming==='1'){ b.dataset.confirming='0'; b.textContent='Remove'; } }, 4000);
+        setTimeout(()=>{ if(b && b.dataset) { b.dataset.confirming='0'; b.textContent='Remove'; } }, 4000);
         return;
       }
       try {
