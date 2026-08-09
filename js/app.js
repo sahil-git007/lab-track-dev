@@ -98,7 +98,7 @@ function videoEmbedHtml(url){
     </div>`;
   }
 
-  const isDirect = /\.(mp4|webm|ogg)(\?.*)?$ /i.test(clean);
+  const isDirect = /\.(mp4|webm|ogg)(\?.*)?$/i.test(clean);
   if(isDirect){
     return `<video controls preload="metadata" style="width:100%;max-width:480px;border-radius:8px;border:1px solid var(--grid);margin-top:8px;display:block;">
       <source src="${esc(clean)}" type="video/mp4">
@@ -205,7 +205,7 @@ const KEYS = {
   approvedUsersMap:'lab:approved_users_map'
 };
 
-const CURRENT_BUILD_VERSION = 'v3.0.1-instant-login-fix';
+const CURRENT_BUILD_VERSION = 'v3.0.2-admin-return-privilege';
 
 function buildNav(){
   const nav = [
@@ -303,7 +303,7 @@ async function checkAndPublishAutoNotice(){
       const autoUpdateNotice = {
         id: uid(),
         title: `Automated System Update (${CURRENT_BUILD_VERSION})`,
-        desc: 'Bypassed server status restriction for in-charge and approved accounts during login verification.',
+        desc: 'Granted Lab In-Charge and Owner privileges to mark active checkouts returned on behalf of any user.',
         type: 'SYSTEM',
         time: Date.now()
       };
@@ -1025,7 +1025,7 @@ async function renderCheckout(){
           Borrower: <strong>${esc(c.borrower)}</strong> · Out: ${fmtTime(c.checkoutTime)}
           ${c.dueTime? ' · Due: '+fmtTime(c.dueTime):''}
           ${c.returnTime? ' · Returned: '+fmtTime(c.returnTime):''}
-          ${canReturn? `<div style="margin-top:8px;"><button class="btn btn-sm" data-return="${c.id}">${profileRole==='owner' && c.status==='Active' ? 'Force Return (Owner)' : 'Mark returned'}</button></div>`:''}
+          ${canReturn? `<div style="margin-top:8px;"><button class="btn btn-sm" data-return="${c.id}">${profileRole==='owner' || profileRole==='incharge' && c.status==='Active' ? 'Admin Return' : 'Mark returned'}</button></div>`:''}
         </div>
       </div>`;
     }).join('');
