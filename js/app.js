@@ -219,7 +219,7 @@ const KEYS = {
   approvedUsersMap:'lab:approved_users_map'
 };
 
-const CURRENT_BUILD_VERSION = 'v3.1.3-role-sync-fix';
+const CURRENT_BUILD_VERSION = 'v3.1.7-robust-role-approval';
 
 function buildNav(){
   const nav = [
@@ -254,8 +254,9 @@ async function boot(){
     currentUser = data.user;
 
     const remoteApprovals = await storageGet(KEYS.approvedUsersMap, true) || {};
-    // Ensure role changes automatically retain approved status
-    if(currentUser.role === 'owner' || currentUser.role === 'incharge' || currentUser.role === 'student' || remoteApprovals[currentUser.id] || remoteApprovals[currentUser.username] || remoteApprovals[currentUser.collegeEmail] || remoteApprovals['ALL_APPROVED']){
+    
+    // Robust check: If user is owner, incharge, student, or explicitly in approvals, ensure approved status
+    if(currentUser.role === 'owner' || currentUser.role === 'incharge' || currentUser.role === 'student' || remoteApprovals[currentUser.id] || remoteApprovals[currentUser.username] || remoteApprovals[currentUser.collegeEmail]){
       currentUser.status = 'approved';
     }
 
@@ -268,7 +269,9 @@ async function boot(){
     profileName = currentUser.fullName || 'User';
     profileRole = currentUser.role || 'student';
   }catch(e){
+    console.error('Boot authentication check failed or timed out:', e);
     doLogout(false);
+    renderAuthScreen('login', 'Connection timeout. Please sign in again.');
     return;
   }
   document.getElementById('authOverlay').style.display = 'none';
@@ -318,7 +321,7 @@ async function checkAndPublishAutoNotice(){
       const autoUpdateNotice = {
         id: uid(),
         title: `Automated System Update (${CURRENT_BUILD_VERSION})`,
-        desc: 'Ensured seamless role updates without pending status blocks.',
+        desc: 'Ensured that role changes and manual approvals persist correctly without pending blocks.',
         type: 'SYSTEM',
         time: Date.now()
       };
@@ -337,11 +340,12 @@ function doLogout(redraw=true){
   authToken = null; currentUser = null; profileName = null; profileRole = 'student';
   localStorage.removeItem(AUTH_KEY);
   if(redraw) renderAuthScreen('login');
-  else { document.getElementById('authOverlay').style.display='flex'; renderAuthScreen('login'); }
+  else { const overlay = document.getElementById('authOverlay'); if(overlay) overlay.style.display='flex'; renderAuthScreen('login'); }
 }
 
 async function renderProfileBox(){
   const box = document.getElementById('profileBox');
+  if(!box || !currentUser) return;
   const roleLabel = profileRole==='owner' ? 'Owner' : profileRole==='incharge' ? 'Lab In-Charge' : 'Student';
   
   const notifsKey = `lab:notifications:${currentUser.id}`;
@@ -403,8 +407,10 @@ function showPersonalNotificationsModal(notifsKey, notifs){
 
 /* ============ Auth screens (login / register) ============ */
 function renderAuthScreen(mode, errorMsg){
-  document.getElementById('authOverlay').style.display = 'flex';
+  const overlay = document.getElementById('authOverlay');
+  if(overlay) overlay.style.display = 'flex';
   const card = document.getElementById('authCard');
+  if(!card) return;
   if(mode==='login'){
     card.innerHTML = `
       <h2>Sign in to LabTrack</h2>
@@ -419,11 +425,16 @@ function renderAuthScreen(mode, errorMsg){
         Made with ❤️ by <a href="https://github.com/sahil-git007" target="_blank" style="color: var(--accent); font-weight: 600; text-decoration: none;">Sahil Sahoo</a>
       </div>
     `;
-    document.getElementById('toRegister').onclick = ()=> renderAuthScreen('register');
+    const regLink = document.getElementById('toRegister');
+    if(regLink) regLink.onclick = ()=> renderAuthScreen('register');
     const submit = async ()=>{
-      const collegeCode = document.getElementById('loCollegeCode').value.trim();
-      const username = document.getElementById('loUsername').value.trim();
-      const password = document.getElementById('loPassword').value;
+      const collegeCodeEl = document.getElementById('loCollegeCode');
+      const usernameEl = document.getElementById('loUsername');
+      const passwordEl = document.getElementById('loPassword');
+      if(!collegeCodeEl || !usernameEl || !passwordEl) return;
+      const collegeCode = collegeCodeEl.value.trim();
+      const username = usernameEl.value.trim();
+      const password = passwordEl.value;
       if(!collegeCode || !username || !password){ renderAuthScreen('login', 'Fill in all fields.'); return; }
       try{
         const res = await fetch('/api/auth/login', {
@@ -434,13 +445,11 @@ function renderAuthScreen(mode, errorMsg){
         if(!res.ok){ renderAuthScreen('login', data.error || 'Login failed.'); return; }
         
         const user = data.user;
-        if(user) {
+        if(user && user.role !== 'owner') {
            const remoteApprovals = await storageGet(KEYS.approvedUsersMap, true) || {};
-           if(user.role === 'owner' || user.role === 'incharge' || user.role === 'student' || remoteApprovals[user.id] || remoteApprovals[user.username] || remoteApprovals[user.collegeEmail] || remoteApprovals['ALL_APPROVED']) {
-              user.status = 'approved';
-           }
+           const isApproved = user.status === 'approved' || remoteApprovals[user.id] || remoteApprovals[user.username] || remoteApprovals[user.collegeEmail];
            
-           if(user.status !== 'approved' && user.role !== 'owner') {
+           if(!isApproved) {
               renderAuthScreen('login', 'Your account is pending approval by your Lab In-Charge or Owner.');
               showToast('Your account is pending approval by your Lab In-Charge or Owner.', 'error');
               return;
@@ -452,7 +461,8 @@ function renderAuthScreen(mode, errorMsg){
         boot();
       }catch(e){ renderAuthScreen('login', 'Could not reach the server.'); }
     };
-    document.getElementById('loSubmit').onclick = submit;
+    const subBtn = document.getElementById('loSubmit');
+    if(subBtn) subBtn.onclick = submit;
     card.querySelectorAll('input').forEach(inp=> inp.addEventListener('keydown', e=>{ if(e.key==='Enter') submit(); }));
   } else {
     card.innerHTML = `
@@ -475,8 +485,10 @@ function renderAuthScreen(mode, errorMsg){
       <button class="btn btn-primary" id="reSubmit">Submit for approval</button>
       <div class="switch-mode">Already have an approved account? <a id="toLogin">Sign in</a></div>
     `;
-    document.getElementById('toLogin').onclick = ()=> renderAuthScreen('login');
-    document.getElementById('reSubmit').onclick = async ()=>{
+    const logLink = document.getElementById('toLogin');
+    if(logLink) logLink.onclick = ()=> renderAuthScreen('login');
+    const regSubmit = document.getElementById('reSubmit');
+    if(regSubmit) regSubmit.onclick = async ()=>{
       const fullName = document.getElementById('reName').value.trim();
       const username = document.getElementById('reUsername').value.trim();
       const collegeEmail = document.getElementById('reEmail').value.trim();
@@ -508,7 +520,8 @@ function renderAuthScreen(mode, errorMsg){
           </div>
           <button class="btn btn-primary" id="backToLogin">Return to Sign In</button>
         `;
-        document.getElementById('backToLogin').onclick = ()=> renderAuthScreen('login');
+        const backBtn = document.getElementById('backToLogin');
+        if(backBtn) backBtn.onclick = ()=> renderAuthScreen('login');
       }catch(e){ renderAuthScreen('register', 'Could not reach the server.'); }
     };
   }
@@ -550,6 +563,7 @@ function showToast(msg, type='info'){
 
 function renderSidebar(){
   const sb = document.getElementById('sidebar');
+  if(!sb) return;
   sb.innerHTML = buildNav().map(g=>`
     <div class="nav-label-group">${g.group}</div>
     ${g.items.map(it=>`<div class="nav-item ${currentTab===it.id?'active':''}" data-tab="${it.id}"><span class="ic">${it.icon}</span><span>${it.label}</span></div>`).join('')}
@@ -565,9 +579,10 @@ async function switchTab(tab){
   currentTab = tab;
   renderSidebar();
   const main = document.getElementById('main');
+  if(!main) return;
   main.innerHTML = `<div class="loading-note">Loading ${tab}…</div>`;
   const renderers = { dashboard:renderDashboard, notices:renderNotices, analytics:renderAnalytics, inventory:renderInventory, checkout:renderCheckout, usage:renderUsage, maintenance:renderMaintenance, scan:renderScan, users:renderUsers };
-  await renderers[tab]();
+  if(renderers[tab]) await renderers[tab]();
 }
 
 async function nextTag(){ tagCounter += 1; await storageSet(KEYS.tagCounter, String(tagCounter), true); return 'LAB-EQ-'+String(tagCounter).padStart(4,'0'); }
@@ -575,6 +590,7 @@ async function nextTag(){ tagCounter += 1; await storageSet(KEYS.tagCounter, Str
 /* ============ CLEAN DASHBOARD (HOME SCREEN) WITH HIGHLIGHTED GREETING ============ */
 async function renderDashboard(){
   const main = document.getElementById('main');
+  if(!main) return;
   const userName = currentUser ? currentUser.fullName : 'User';
   const userDept = currentUser && currentUser.department ? `${currentUser.department} DEPARTMENT` : 'CSE DEPARTMENT';
   
@@ -622,6 +638,7 @@ async function renderDashboard(){
 /* ============ NOTICES & LIVE UPDATES TAB ============ */
 async function renderNotices(){
   const main = document.getElementById('main');
+  if(!main) return;
   let notices = await loadList(KEYS.notices, true);
   
   if(!notices.length){
@@ -683,10 +700,15 @@ async function renderNotices(){
   `;
 
   if(isOwner){
-    document.getElementById('publishNoticeBtn').onclick = async ()=>{
-      const title = document.getElementById('noticeTitle').value.trim();
-      const desc = document.getElementById('noticeDesc').value.trim();
-      const type = document.getElementById('noticeType').value;
+    const pubBtn = document.getElementById('publishNoticeBtn');
+    if(pubBtn) pubBtn.onclick = async ()=>{
+      const titleEl = document.getElementById('noticeTitle');
+      const descEl = document.getElementById('noticeDesc');
+      const typeEl = document.getElementById('noticeType');
+      if(!titleEl || !descEl || !typeEl) return;
+      const title = titleEl.value.trim();
+      const desc = descEl.value.trim();
+      const type = typeEl.value;
       if(!title || !desc){ showToast('Fill in both title and description.', 'warn'); return; }
 
       if(containsProfanityOrNonsense(title) || containsProfanityOrNonsense(desc)){
@@ -732,6 +754,7 @@ async function renderAnalytics(){
   const maxUse = topUsed.length ? topUsed[0][1] : 1;
 
   const main = document.getElementById('main');
+  if(!main) return;
   main.innerHTML = `
     <div class="module-head">
       <h2>Dashboard Analytics</h2>
@@ -770,6 +793,7 @@ async function renderInventory(){
     loadList(KEYS.equipment, true), loadList(KEYS.checkouts, true), loadList(KEYS.maintenance, true)
   ]);
   const main = document.getElementById('main');
+  if(!main) return;
   const isIncharge = profileRole==='incharge' || profileRole==='owner';
   main.innerHTML = `
     <div class="module-head">
@@ -816,23 +840,26 @@ async function renderInventory(){
     <div id="eqList"></div>
   `;
   if(isIncharge){
-    document.getElementById('eqSubmit').onclick = async ()=>{
+    const subBtn = document.getElementById('eqSubmit');
+    if(subBtn) subBtn.onclick = async ()=>{
       if(!requireIncharge()) return;
       const nameInput = document.getElementById('eqName');
+      if(!nameInput) return;
       const name = nameInput.value.trim();
       if(!name){ showToast('Equipment name is required.', 'warn'); nameInput.focus(); return; }
-      const qty = Math.max(1, parseInt(document.getElementById('eqQty').value) || 1);
-      const priceVal = document.getElementById('eqPrice').value;
+      const qtyEl = document.getElementById('eqQty');
+      const qty = Math.max(1, parseInt(qtyEl ? qtyEl.value : 1) || 1);
+      const priceVal = document.getElementById('eqPrice')?.value;
       const tag = await nextTag();
       equipment.unshift({
-        id: uid(), tag, name, category: document.getElementById('eqCategory').value.trim()||'General',
-        location: document.getElementById('eqLocation').value.trim()||'Unassigned',
+        id: uid(), tag, name, category: document.getElementById('eqCategory')?.value.trim()||'General',
+        location: document.getElementById('eqLocation')?.value.trim()||'Unassigned',
         price: priceVal ? parseFloat(priceVal) : null,
-        description: document.getElementById('eqDescription').value.trim(),
-        usageNotes: document.getElementById('eqUsage').value.trim(),
-        videoUrl: document.getElementById('eqVideo').value.trim(),
-        photoUrls: document.getElementById('eqPhotos').value.trim(),
-        extraLinks: document.getElementById('eqLinks').value.trim(),
+        description: document.getElementById('eqDescription')?.value.trim(),
+        usageNotes: document.getElementById('eqUsage')?.value.trim(),
+        videoUrl: document.getElementById('eqVideo')?.value.trim(),
+        photoUrls: document.getElementById('eqPhotos')?.value.trim(),
+        extraLinks: document.getElementById('eqLinks')?.value.trim(),
         totalQty: qty, availableQty: qty, condition:'Good', addedBy: profileName, timestamp: Date.now()
       });
       const ok = await saveList(KEYS.equipment, equipment, true);
@@ -842,22 +869,28 @@ async function renderInventory(){
     };
   }
   const catSel = document.getElementById('eqFilterCat');
-  [...new Set(equipment.map(e=>e.category))].forEach(c=>{
-    const o = document.createElement('option'); o.textContent=c; catSel.appendChild(o);
-  });
+  if(catSel){
+    [...new Set(equipment.map(e=>e.category))].forEach(c=>{
+      const o = document.createElement('option'); o.textContent=c; catSel.appendChild(o);
+    });
+  }
   const confirmingRemove = new Set();
   const editingDetails = new Set();
   const activeMediaTabs = {};
 
   const drawList = ()=>{
-    const q = document.getElementById('eqSearch').value.toLowerCase();
-    const fc = document.getElementById('eqFilterCat').value;
-    const fcond = document.getElementById('eqFilterCond').value;
+    const searchEl = document.getElementById('eqSearch');
+    const catEl = document.getElementById('eqFilterCat');
+    const condEl = document.getElementById('eqFilterCond');
+    const q = searchEl ? searchEl.value.toLowerCase() : '';
+    const fc = catEl ? catEl.value : '';
+    const fcond = condEl ? condEl.value : '';
     const filtered = equipment.filter(e=>
       (!fc || e.category===fc) && (!fcond || e.condition===fcond) &&
       (!q || (e.name+e.tag).toLowerCase().includes(q))
     );
     const list = document.getElementById('eqList');
+    if(!list) return;
     if(!filtered.length){ list.innerHTML = `<div class="empty">No equipment registered yet. Add the first item above.</div>`; return; }
     list.innerHTML = `<div class="grid grid-2">` + filtered.map(e=>{
       const condBadge = e.condition==='Good' ? 'badge-ok' : e.condition==='Damaged' ? 'badge-rust' : 'badge-warn';
@@ -955,18 +988,18 @@ async function renderInventory(){
       const eqId = b.dataset.saveDetails;
       const eq = equipment.find(x=>x.id===eqId);
       
-      const newTotal = parseInt(document.getElementById('editTotalQty-'+eqId).value) || 1;
-      const newAvail = parseInt(document.getElementById('editAvailQty-'+eqId).value) || 0;
-      const priceVal = document.getElementById('editPrice-'+eqId).value;
+      const newTotal = parseInt(document.getElementById('editTotalQty-'+eqId)?.value) || 1;
+      const newAvail = parseInt(document.getElementById('editAvailQty-'+eqId)?.value) || 0;
+      const priceVal = document.getElementById('editPrice-'+eqId)?.value;
 
       eq.totalQty = newTotal;
       eq.availableQty = Math.min(newTotal, Math.max(0, newAvail));
       eq.price = priceVal ? parseFloat(priceVal) : null;
-      eq.description = document.getElementById('editDesc-'+eqId).value.trim();
-      eq.usageNotes = document.getElementById('editUsage-'+eqId).value.trim();
-      eq.videoUrl = document.getElementById('editVideo-'+eqId).value.trim();
-      eq.photoUrls = document.getElementById('editPhotos-'+eqId).value.trim();
-      eq.extraLinks = document.getElementById('editLinks-'+eqId).value.trim();
+      eq.description = document.getElementById('editDesc-'+eqId)?.value.trim();
+      eq.usageNotes = document.getElementById('editUsage-'+eqId)?.value.trim();
+      eq.videoUrl = document.getElementById('editVideo-'+eqId)?.value.trim();
+      eq.photoUrls = document.getElementById('editPhotos-'+eqId)?.value.trim();
+      eq.extraLinks = document.getElementById('editLinks-'+eqId)?.value.trim();
 
       const ok = await saveList(KEYS.equipment, equipment, true);
       if(!ok){ showToast('Could not save — check your connection and try again.', 'error'); return; }
@@ -1013,7 +1046,10 @@ async function renderInventory(){
       renderInventory();
     });
   };
-  ['eqSearch','eqFilterCat','eqFilterCond'].forEach(id=> document.getElementById(id).addEventListener('input', drawList));
+  ['eqSearch','eqFilterCat','eqFilterCond'].forEach(id=>{
+    const el = document.getElementById(id);
+    if(el) el.addEventListener('input', drawList);
+  });
   drawList();
 }
 
@@ -1034,6 +1070,7 @@ async function renderCheckout(){
   }
 
   const main = document.getElementById('main');
+  if(!main) return;
   const available = equipment.filter(e=>e.availableQty>0 && e.condition==='Good');
   
   main.innerHTML = `
@@ -1065,22 +1102,25 @@ async function renderCheckout(){
     <div id="coList"></div>
   `;
 
-  document.getElementById('coSubmit').onclick = async ()=>{
+  const subBtn = document.getElementById('coSubmit');
+  if(subBtn) subBtn.onclick = async ()=>{
     if(!requireProfile()) return;
-    const eqId = document.getElementById('coEquip').value;
-    if(!eqId) return;
+    const equipSel = document.getElementById('coEquip');
+    if(!equipSel || !equipSel.value) return;
+    const eqId = equipSel.value;
     const purposeInput = document.getElementById('coPurpose');
-    const purpose = purposeInput.value.trim();
+    const purpose = purposeInput ? purposeInput.value.trim() : '';
     
     if(containsProfanityOrNonsense(purpose)){
       showToast('Invalid description. Please provide a meaningful purpose.', 'error');
-      purposeInput.focus();
+      if(purposeInput) purposeInput.focus();
       return;
     }
 
     const eq = equipment.find(x=>x.id===eqId);
-    const qty = Math.min(parseInt(document.getElementById('coQty').value)||1, eq.availableQty);
-    const dueVal = document.getElementById('coDue').value;
+    const qtyEl = document.getElementById('coQty');
+    const qty = Math.min(parseInt(qtyEl ? qtyEl.value : 1)||1, eq.availableQty);
+    const dueVal = document.getElementById('coDue')?.value;
     
     eq.availableQty -= qty;
     await saveList(KEYS.equipment, equipment, true);
@@ -1114,8 +1154,10 @@ async function renderCheckout(){
 
   const list = document.getElementById('coList');
   const draw = ()=>{
-    const fs = document.getElementById('coFilterStatus').value;
+    const filterStatEl = document.getElementById('coFilterStatus');
+    const fs = filterStatEl ? filterStatEl.value : '';
     const filtered = checkouts.filter(c=> !fs || c.status===fs);
+    if(!list) return;
     if(!filtered.length){ list.innerHTML = `<div class="empty">No checkout records yet.</div>`; return; }
     const now = Date.now();
 
@@ -1258,7 +1300,8 @@ async function renderCheckout(){
       renderCheckout();
     });
   };
-  document.getElementById('coFilterStatus').addEventListener('input', draw);
+  const filterStatEl = document.getElementById('coFilterStatus');
+  if(filterStatEl) filterStatEl.addEventListener('input', draw);
   draw();
 }
 
@@ -1266,6 +1309,7 @@ async function renderCheckout(){
 async function renderUsage(){
   const checkouts = await loadList(KEYS.checkouts, true);
   const main = document.getElementById('main');
+  if(!main) return;
   const sorted = [...checkouts].sort((a,b)=>b.checkoutTime-a.checkoutTime);
   const totalHours = checkouts.filter(c=>c.returnTime).reduce((s,c)=>s+hoursBetween(c.checkoutTime,c.returnTime),0);
   main.innerHTML = `
@@ -1284,6 +1328,7 @@ async function renderUsage(){
     </div>
   `;
   const list = document.getElementById('usList');
+  if(!list) return;
   if(!sorted.length){ list.innerHTML = `<div class="empty">No usage recorded yet — check out an item to start the log.</div>`; return; }
   list.innerHTML = sorted.map(c=>{
     const dur = c.returnTime ? hoursBetween(c.checkoutTime,c.returnTime).toFixed(1)+'h' : '—';
@@ -1305,6 +1350,7 @@ async function renderUsage(){
 async function renderMaintenance(){
   const [equipment, maintenance] = await Promise.all([loadList(KEYS.equipment,true), loadList(KEYS.maintenance,true)]);
   const main = document.getElementById('main');
+  if(!main) return;
   main.innerHTML = `
     <div class="module-head">
       <h2>Maintenance</h2>
@@ -1324,21 +1370,22 @@ async function renderMaintenance(){
     <div class="filter-row"><select id="mtFilterStatus"><option value="">All</option><option>Open</option><option>Resolved</option></select></div>
     <div id="mtList"></div>
   `;
-  document.getElementById('mtSubmit').onclick = async ()=>{
+  const subBtn = document.getElementById('mtSubmit');
+  if(subBtn) subBtn.onclick = async ()=>{
     if(!requireProfile()) return;
     const eqIdEl = document.getElementById('mtEquip');
     if(!eqIdEl || !eqIdEl.value) return;
     const issueInput = document.getElementById('mtIssue');
-    const issue = issueInput.value.trim();
+    const issue = issueInput ? issueInput.value.trim() : '';
 
     if(containsProfanityOrNonsense(issue)){
       showToast('Invalid description. Please provide a meaningful, professional description (at least 2 valid words).', 'error');
-      issueInput.focus();
+      if(issueInput) issueInput.focus();
       return;
     }
 
     const eq = equipment.find(x=>x.id===eqIdEl.value);
-    const severity = document.getElementById('mtSeverity').value;
+    const severity = document.getElementById('mtSeverity')?.value || 'Under Maintenance';
     eq.condition = severity;
     if(eq.availableQty>0) eq.availableQty -= 1;
     await saveList(KEYS.equipment, equipment, true);
@@ -1348,8 +1395,10 @@ async function renderMaintenance(){
   };
   const list = document.getElementById('mtList');
   const draw = ()=>{
-    const fs = document.getElementById('mtFilterStatus').value;
+    const filterStatEl = document.getElementById('mtFilterStatus');
+    const fs = filterStatEl ? filterStatEl.value : '';
     const filtered = maintenance.filter(m=> !fs || m.status===fs);
+    if(!list) return;
     if(!filtered.length){ list.innerHTML = `<div class="empty">No maintenance reports yet.</div>`; return; }
     list.innerHTML = filtered.map(m=>`
       <div class="asset-tag">
@@ -1376,7 +1425,8 @@ async function renderMaintenance(){
       renderMaintenance();
     });
   };
-  document.getElementById('mtFilterStatus').addEventListener('input', draw);
+  const filterStatEl = document.getElementById('mtFilterStatus');
+  if(filterStatEl) filterStatEl.addEventListener('input', draw);
   draw();
 }
 
@@ -1392,6 +1442,7 @@ function stopCamera(){
 async function renderScan(){
   stopCamera();
   const main = document.getElementById('main');
+  if(!main) return;
   main.innerHTML = `
     <div class="module-head">
       <h2>Scan QR</h2>
@@ -1433,20 +1484,25 @@ async function renderScan(){
     </style>
   `;
 
-  document.getElementById('camStart').onclick = startCamera;
-  document.getElementById('camStop').onclick = ()=>{
+  const startBtn = document.getElementById('camStart');
+  const stopBtn = document.getElementById('camStop');
+  const lookupBtn = document.getElementById('manualLookup');
+  const manualTagEl = document.getElementById('manualTag');
+
+  if(startBtn) startBtn.onclick = startCamera;
+  if(stopBtn) stopBtn.onclick = ()=>{
     stopCamera();
     resetCameraUI();
     const statusEl = document.getElementById('camStatus');
     if(statusEl) statusEl.textContent = 'Camera stopped.';
   };
-  document.getElementById('manualLookup').onclick = ()=>{
-    const v = document.getElementById('manualTag').value.trim();
+  if(lookupBtn) lookupBtn.onclick = ()=>{
+    const v = manualTagEl ? manualTagEl.value.trim() : '';
     if(!v){ showToast('Type a tag code first.', 'warn'); return; }
     lookupAndShow(v);
   };
-  document.getElementById('manualTag').addEventListener('keydown', e=>{
-    if(e.key==='Enter') document.getElementById('manualLookup').click();
+  if(manualTagEl) manualTagEl.addEventListener('keydown', e=>{
+    if(e.key==='Enter' && lookupBtn) lookupBtn.click();
   });
 }
 
@@ -1504,7 +1560,7 @@ async function startCamera(){
 
   video.srcObject = scanStream;
   video.style.display = 'block';
-  placeholder.style.display = 'none';
+  if(placeholder) placeholder.style.display = 'none';
   if(overlay) overlay.style.display = 'block';
 
   try{ await video.play(); }
@@ -1649,6 +1705,7 @@ async function lookupAndShow(tagOrId){
 /* ============ MANAGEMENT: MANAGE USERS, APPROVALS & HISTORY RESET ============ */
 async function renderUsers(){
   const main = document.getElementById('main');
+  if(!main) return;
   if(profileRole!=='owner' && profileRole!=='incharge'){
     main.innerHTML = `<div class="empty">This section is only available to Lab In-Charge and Owner accounts.</div>`;
     return;
@@ -1675,7 +1732,8 @@ async function renderUsers(){
   `;
 
   if(profileRole==='owner'){
-    document.getElementById('clearHistoryBtn').onclick = async ()=>{
+    const clearBtn = document.getElementById('clearHistoryBtn');
+    if(clearBtn) clearBtn.onclick = async ()=>{
       if(!confirm('Are you sure you want to clear all checkout and maintenance history? This cannot be undone.')) return;
       try{
         await Promise.all([
@@ -1695,19 +1753,21 @@ async function renderUsers(){
     if(!res.ok) throw new Error('failed');
     users = (await res.json()).users;
   }catch(e){
-    document.getElementById('usersBody').innerHTML = `<div class="empty">Could not load users.</div>`;
+    const uBody = document.getElementById('usersBody');
+    if(uBody) uBody.innerHTML = `<div class="empty">Could not load users.</div>`;
     return;
   }
 
   const remoteApprovals = await storageGet(KEYS.approvedUsersMap, true) || {};
   users.forEach(u => {
-    if(u.role === 'owner' || u.role === 'incharge' || u.role === 'student' || remoteApprovals[u.id] || remoteApprovals[u.username] || remoteApprovals[u.collegeEmail]) {
+    if(u.role === 'owner' || remoteApprovals[u.id] || remoteApprovals[u.username] || remoteApprovals[u.collegeEmail]) {
       u.status = 'approved';
     }
   });
 
   const draw = ()=>{
     const body = document.getElementById('usersBody');
+    if(!body) return;
     if(!users.length){ body.innerHTML = `<div class="empty">No users registered yet.</div>`; return; }
     body.innerHTML = `
       <div class="user-row head">
@@ -1742,7 +1802,6 @@ async function renderUsers(){
       const targetUser = users.find(x => x.id === userId);
       
       remoteApprovals[userId] = true;
-      remoteApprovals['ALL_APPROVED'] = true;
       if(targetUser){
         if(targetUser.id) remoteApprovals[targetUser.id] = true;
         if(targetUser.username) remoteApprovals[targetUser.username] = true;
@@ -1772,10 +1831,10 @@ async function renderUsers(){
     body.querySelectorAll('[data-role]').forEach(sel=> sel.onchange = async ()=>{
       const userId = sel.dataset.role;
       const newRole = sel.value;
+      const targetUser = users.find(x => x.id === userId);
       
-      // Also ensure status remains approved upon role change
-      remoteApprovals[userId] = true;
-      remoteApprovals['ALL_APPROVED'] = true;
+      if(targetUser) targetUser.role = newRole;
+      if(userId) remoteApprovals[userId] = true;
       await storageSet(KEYS.approvedUsersMap, remoteApprovals, true);
 
       try {
@@ -1783,7 +1842,7 @@ async function renderUsers(){
           method:'PATCH', headers:{'Content-Type':'application/json'},
           body: JSON.stringify({ role: newRole, status: 'approved' })
         });
-        showToast('Role updated and account status kept approved.', 'ok');
+        showToast('Role updated successfully.', 'ok');
       }catch(e){
         showToast('Role updated locally.', 'ok');
       }
