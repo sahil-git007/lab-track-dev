@@ -205,7 +205,7 @@ const KEYS = {
   approvedUsersMap:'lab:approved_users_map'
 };
 
-const CURRENT_BUILD_VERSION = 'v3.0.5-editable-quantity';
+const CURRENT_BUILD_VERSION = 'v3.0.6-checkout-return-approval';
 
 function buildNav(){
   const nav = [
@@ -303,7 +303,7 @@ async function checkAndPublishAutoNotice(){
       const autoUpdateNotice = {
         id: uid(),
         title: `Automated System Update (${CURRENT_BUILD_VERSION})`,
-        desc: 'Added editable total and available stock quantity controls to equipment management details.',
+        desc: 'Added dual checkout and return verification workflow requiring admin acceptance.',
         type: 'SYSTEM',
         time: Date.now()
       };
@@ -955,9 +955,9 @@ async function renderInventory(){
 /* ============ CHECKOUT / RETURN ============ */
 async function renderCheckout(){
   const [equipment, checkouts] = await Promise.all([loadList(KEYS.equipment,true), loadList(KEYS.checkouts,true)]);
-  
   const main = document.getElementById('main');
   const available = equipment.filter(e=>e.availableQty>0 && e.condition==='Good');
+  
   main.innerHTML = `
     <div class="module-head">
       <h2>Checkout / Return</h2>
@@ -978,14 +978,15 @@ async function renderCheckout(){
         <div class="form-group"><label>Purpose</label><input id="coPurpose" placeholder="e.g. Signals lab experiment 4" /></div>
         <div class="form-group"><label>Due back by</label><input id="coDue" type="datetime-local" /></div>
       </div>
-      <button class="btn btn-primary" id="coSubmit">Check out</button>
+      <button class="btn btn-primary" id="coSubmit">Request checkout</button>
       ${!available.length ? `<div class="empty" style="margin-top:12px;">Nothing is currently available to check out.</div>` : ''}
     </div>
     <div class="filter-row">
-      <select id="coFilterStatus"><option value="">All statuses</option><option>Active</option><option>Returned</option></select>
+      <select id="coFilterStatus"><option value="">All statuses</option><option>Pending Checkout Approval</option><option>Active</option><option>Pending Return Approval</option><option>Returned</option></select>
     </div>
     <div id="coList"></div>
   `;
+
   document.getElementById('coSubmit').onclick = async ()=>{
     if(!requireProfile()) return;
     const eqId = document.getElementById('coEquip').value;
@@ -994,7 +995,7 @@ async function renderCheckout(){
     const purpose = purposeInput.value.trim();
     
     if(containsProfanityOrNonsense(purpose)){
-      showToast('Invalid description. Please provide a meaningful, professional purpose (at least 2 valid words).', 'error');
+      showToast('Invalid description. Please provide a meaningful purpose.', 'error');
       purposeInput.focus();
       return;
     }
@@ -1002,26 +1003,49 @@ async function renderCheckout(){
     const eq = equipment.find(x=>x.id===eqId);
     const qty = Math.min(parseInt(document.getElementById('coQty').value)||1, eq.availableQty);
     const dueVal = document.getElementById('coDue').value;
+    
+    // Hold stock immediately upon request
     eq.availableQty -= qty;
     await saveList(KEYS.equipment, equipment, true);
+
     checkouts.unshift({
       id: uid(), equipmentId: eq.id, equipmentName: eq.name, equipmentTag: eq.tag, qty,
-      borrower: profileName, purpose: purpose,
+      borrower: profileName, borrowerId: currentUser.id, purpose: purpose,
       checkoutTime: Date.now(), dueTime: dueVal ? new Date(dueVal).getTime() : null,
-      returnTime: null, status:'Active'
+      returnTime: null, status:'Pending Checkout Approval'
     });
     await saveList(KEYS.checkouts, checkouts, true);
+    showToast('Checkout request submitted for Lab In-Charge & Owner approval.', 'ok');
     renderCheckout();
   };
+
   const list = document.getElementById('coList');
   const draw = ()=>{
     const fs = document.getElementById('coFilterStatus').value;
     const filtered = checkouts.filter(c=> !fs || c.status===fs);
     if(!filtered.length){ list.innerHTML = `<div class="empty">No checkout records yet.</div>`; return; }
     const now = Date.now();
+
     list.innerHTML = filtered.map(c=>{
       const isOverdue = c.status==='Active' && c.dueTime && c.dueTime < now;
-      const canReturn = c.status==='Active' && (c.borrower===profileName || profileRole==='incharge' || profileRole==='owner');
+      const isAdmin = profileRole==='incharge' || profileRole==='owner';
+      const isBorrower = c.borrower === profileName || c.borrowerId === currentUser.id;
+
+      let actionBtn = '';
+      if(c.status === 'Pending Checkout Approval' && isAdmin){
+        actionBtn = `<div style="margin-top:8px;display:flex;gap:6px;">
+          <button class="btn btn-sm btn-primary" data-approve-co="${c.id}">Accept Checkout</button>
+          <button class="btn btn-sm" style="color:var(--rust);" data-reject-co="${c.id}">Reject</button>
+        </div>`;
+      } else if(c.status === 'Active' && isBorrower){
+        actionBtn = `<div style="margin-top:8px;"><button class="btn btn-sm" data-request-return="${c.id}">Request Return Approval</button></div>`;
+      } else if(c.status === 'Pending Return Approval' && isAdmin){
+        actionBtn = `<div style="margin-top:8px;display:flex;gap:6px;">
+          <button class="btn btn-sm btn-primary" data-approve-return="${c.id}">Accept Return & Verify Condition</button>
+          <button class="btn btn-sm" style="color:var(--rust);" data-reject-return="${c.id}">Reject Return</button>
+        </div>`;
+      }
+
       return `
       <div class="asset-tag">
         <span class="tick-tr"></span><span class="tick-br"></span>
@@ -1030,23 +1054,69 @@ async function renderCheckout(){
             <div class="tag-id">${c.equipmentTag||''}</div>
             <div class="tag-title">${esc(c.equipmentName)} <span class="mono" style="font-weight:400;color:var(--ink-soft);">×${c.qty}</span></div>
           </div>
-          <span class="badge ${c.status==='Returned'?'badge-ok':isOverdue?'badge-rust':'badge-warn'}">${isOverdue?'Overdue':c.status}</span>
+          <span class="badge ${c.status==='Returned'?'badge-ok':c.status.includes('Pending')?'badge-warn':isOverdue?'badge-rust':'badge-neutral'}">${isOverdue?'Overdue':c.status}</span>
         </div>
         <div class="tag-body">
           ${c.purpose? esc(c.purpose)+'<br/>':''}
-          Borrower: <strong>${esc(c.borrower)}</strong> · Out: ${fmtTime(c.checkoutTime)}
+          Borrower: <strong>${esc(c.borrower)}</strong> · Requested/Out: ${fmtTime(c.checkoutTime)}
           ${c.dueTime? ' · Due: '+fmtTime(c.dueTime):''}
           ${c.returnTime? ' · Returned: '+fmtTime(c.returnTime):''}
-          ${canReturn? `<div style="margin-top:8px;"><button class="btn btn-sm" data-return="${c.id}">${profileRole==='owner' || profileRole==='incharge' ? 'Admin Return' : 'Mark returned'}</button></div>`:''}
+          ${actionBtn}
         </div>
       </div>`;
     }).join('');
-    list.querySelectorAll('[data-return]').forEach(b=> b.onclick = async ()=>{
-      const c = checkouts.find(x=>x.id==b.dataset.return);
-      c.status='Returned'; c.returnTime=Date.now();
+
+    // Accept Checkout Request
+    list.querySelectorAll('[data-approve-co]').forEach(b=> b.onclick = async ()=>{
+      if(!requireIncharge()) return;
+      const c = checkouts.find(x=>x.id===b.dataset.approveCo);
+      c.status = 'Active';
+      await saveList(KEYS.checkouts, checkouts, true);
+      showToast('Checkout request accepted.', 'ok');
+      renderCheckout();
+    });
+
+    // Reject Checkout Request
+    list.querySelectorAll('[data-reject-co]').forEach(b=> b.onclick = async ()=>{
+      if(!requireIncharge()) return;
+      const c = checkouts.find(x=>x.id===b.dataset.rejectCo);
+      c.status = 'Rejected';
       const eq = equipment.find(x=>x.id===c.equipmentId);
       if(eq) eq.availableQty = Math.min(eq.totalQty, eq.availableQty + c.qty);
       await Promise.all([saveList(KEYS.checkouts, checkouts, true), saveList(KEYS.equipment, equipment, true)]);
+      showToast('Checkout request rejected, stock restored.', 'ok');
+      renderCheckout();
+    });
+
+    // User Requests Return
+    list.querySelectorAll('[data-request-return]').forEach(b=> b.onclick = async ()=>{
+      const c = checkouts.find(x=>x.id===b.dataset.requestReturn);
+      c.status = 'Pending Return Approval';
+      await saveList(KEYS.checkouts, checkouts, true);
+      showToast('Return verification request sent to Owner & Lab In-Charge.', 'ok');
+      renderCheckout();
+    });
+
+    // Accept Return & Verify Condition
+    list.querySelectorAll('[data-approve-return]').forEach(b=> b.onclick = async ()=>{
+      if(!requireIncharge()) return;
+      const c = checkouts.find(x=>x.id===b.dataset.approveReturn);
+      c.status = 'Returned';
+      c.returnTime = Date.now();
+      const eq = equipment.find(x=>x.id===c.equipmentId);
+      if(eq) eq.availableQty = Math.min(eq.totalQty, eq.availableQty + c.qty);
+      await Promise.all([saveList(KEYS.checkouts, checkouts, true), saveList(KEYS.equipment, equipment, true)]);
+      showToast('Return verified and accepted! Stock restored.', 'ok');
+      renderCheckout();
+    });
+
+    // Reject Return (Condition issue)
+    list.querySelectorAll('[data-reject-return]').forEach(b=> b.onclick = async ()=>{
+      if(!requireIncharge()) return;
+      const c = checkouts.find(x=>x.id===b.dataset.rejectReturn);
+      c.status = 'Active';
+      await saveList(KEYS.checkouts, checkouts, true);
+      showToast('Return rejected due to condition discrepancy. Item remains checked out.', 'warn');
       renderCheckout();
     });
   };
