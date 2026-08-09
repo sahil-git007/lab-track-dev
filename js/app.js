@@ -219,7 +219,7 @@ const KEYS = {
   approvedUsersMap:'lab:approved_users_map'
 };
 
-const CURRENT_BUILD_VERSION = 'v3.1.8-absolute-auth-fix';
+const CURRENT_BUILD_VERSION = 'v3.1.7-robust-role-approval';
 
 function buildNav(){
   const nav = [
@@ -255,7 +255,7 @@ async function boot(){
 
     const remoteApprovals = await storageGet(KEYS.approvedUsersMap, true) || {};
     
-    // Absolute Authorization Check: If approved in storage map or role is elevated, force approved status
+    // Robust check: If user is owner, incharge, student, or explicitly in approvals, ensure approved status
     if(currentUser.role === 'owner' || currentUser.role === 'incharge' || currentUser.role === 'student' || remoteApprovals[currentUser.id] || remoteApprovals[currentUser.username] || remoteApprovals[currentUser.collegeEmail]){
       currentUser.status = 'approved';
     }
@@ -321,7 +321,7 @@ async function checkAndPublishAutoNotice(){
       const autoUpdateNotice = {
         id: uid(),
         title: `Automated System Update (${CURRENT_BUILD_VERSION})`,
-        desc: 'Fixed login clearance bug to perfectly align database and frontend approval checks.',
+        desc: 'Ensured that role changes and manual approvals persist correctly without pending blocks.',
         type: 'SYSTEM',
         time: Date.now()
       };
@@ -1833,15 +1833,8 @@ async function renderUsers(){
       const newRole = sel.value;
       const targetUser = users.find(x => x.id === userId);
       
-      if(targetUser){
-        targetUser.role = newRole;
-        targetUser.status = 'approved'; // Ensure role change automatically preserves approved status
-      }
-      if(userId){
-        remoteApprovals[userId] = true;
-        if(targetUser?.username) remoteApprovals[targetUser.username] = true;
-        if(targetUser?.collegeEmail) remoteApprovals[targetUser.collegeEmail] = true;
-      }
+      if(targetUser) targetUser.role = newRole;
+      if(userId) remoteApprovals[userId] = true;
       await storageSet(KEYS.approvedUsersMap, remoteApprovals, true);
 
       try {
@@ -1849,7 +1842,7 @@ async function renderUsers(){
           method:'PATCH', headers:{'Content-Type':'application/json'},
           body: JSON.stringify({ role: newRole, status: 'approved' })
         });
-        showToast('Role updated and account status preserved as approved.', 'ok');
+        showToast('Role updated successfully.', 'ok');
       }catch(e){
         showToast('Role updated locally.', 'ok');
       }
