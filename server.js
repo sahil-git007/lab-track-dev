@@ -71,7 +71,7 @@ app.post('/api/auth/register', async (req, res) => {
 
     const hashedPassword = await bcrypt.hash(password, 10);
     
-    // Check if this is the very first user for this college code, make them owner and auto-approve
+    // Only the very first user for this college code becomes owner and is auto-approved. Everyone else is strictly pending.
     const count = await User.countDocuments({ collegeCode });
     const role = count === 0 ? 'owner' : 'student';
     const status = count === 0 ? 'approved' : 'pending';
@@ -89,7 +89,7 @@ app.post('/api/auth/register', async (req, res) => {
     });
 
     await newUser.save();
-    res.json({ success: true, message: 'Registration submitted successfully.' });
+    res.json({ success: true, message: 'Registration submitted successfully. Awaiting admin approval.' });
   } catch (err) {
     console.error('Register error:', err);
     res.status(500).json({ error: 'Server error during registration.' });
@@ -106,6 +106,11 @@ app.post('/api/auth/login', async (req, res) => {
     const user = await User.findOne({ collegeCode, $or: [{ username }, { collegeEmail: username }] });
     if (!user || !(await bcrypt.compare(password, user.password))) {
       return res.status(400).json({ error: 'Invalid credentials or college code.' });
+    }
+
+    // STRICT APPROVAL GATE: Block non-owner users whose status in database is not 'approved'
+    if (user.role !== 'owner' && user.status !== 'approved') {
+      return res.status(403).json({ error: 'Your account is pending approval by your Lab In-Charge or Owner.' });
     }
 
     const token = jwt.sign({ id: user._id, role: user.role, collegeCode: user.collegeCode, username: user.username }, JWT_SECRET, { expiresIn: '7d' });
@@ -134,6 +139,11 @@ app.get('/api/auth/me', authenticateToken, async (req, res) => {
   try {
     const user = await User.findById(req.user.id).select('-password');
     if (!user) return res.status(404).json({ error: 'User not found.' });
+    
+    if (user.role !== 'owner' && user.status !== 'approved') {
+      return res.status(403).json({ error: 'Account pending approval.' });
+    }
+
     res.json({ user });
   } catch (err) {
     res.status(500).json({ error: 'Server error.' });
@@ -197,7 +207,11 @@ app.patch('/api/owner/users/:id', authenticateToken, async (req, res) => {
     const { status, role } = req.body;
     const updateData = {};
     if (status) updateData.status = status;
-    if (role) updateData.role = role;
+    if (role) {
+      updateData.role = role;
+      // When an admin changes a user's role, ensure they are also automatically approved
+      updateData.status = 'approved';
+    }
 
     const updatedUser = await User.findByIdAndUpdate(req.params.id, updateData, { new: true }).select('-password');
     if (!updatedUser) return res.status(404).json({ error: 'User not found.' });
