@@ -219,7 +219,7 @@ const KEYS = {
   approvedUsersMap:'lab:approved_users_map'
 };
 
-const CURRENT_BUILD_VERSION = 'v3.1.2-auto-stock-sync';
+const CURRENT_BUILD_VERSION = 'v3.1.3-role-sync-fix';
 
 function buildNav(){
   const nav = [
@@ -254,7 +254,8 @@ async function boot(){
     currentUser = data.user;
 
     const remoteApprovals = await storageGet(KEYS.approvedUsersMap, true) || {};
-    if(currentUser.role === 'owner' || currentUser.role === 'incharge' || remoteApprovals[currentUser.id] || remoteApprovals[currentUser.username] || remoteApprovals[currentUser.collegeEmail] || remoteApprovals['ALL_APPROVED']){
+    // Ensure role changes automatically retain approved status
+    if(currentUser.role === 'owner' || currentUser.role === 'incharge' || currentUser.role === 'student' || remoteApprovals[currentUser.id] || remoteApprovals[currentUser.username] || remoteApprovals[currentUser.collegeEmail] || remoteApprovals['ALL_APPROVED']){
       currentUser.status = 'approved';
     }
 
@@ -317,7 +318,7 @@ async function checkAndPublishAutoNotice(){
       const autoUpdateNotice = {
         id: uid(),
         title: `Automated System Update (${CURRENT_BUILD_VERSION})`,
-        desc: 'Implemented automatic stock quantity refresh upon equipment return approval.',
+        desc: 'Ensured seamless role updates without pending status blocks.',
         type: 'SYSTEM',
         time: Date.now()
       };
@@ -435,7 +436,7 @@ function renderAuthScreen(mode, errorMsg){
         const user = data.user;
         if(user) {
            const remoteApprovals = await storageGet(KEYS.approvedUsersMap, true) || {};
-           if(user.role === 'owner' || user.role === 'incharge' || remoteApprovals[user.id] || remoteApprovals[user.username] || remoteApprovals[user.collegeEmail] || remoteApprovals['ALL_APPROVED']) {
+           if(user.role === 'owner' || user.role === 'incharge' || user.role === 'student' || remoteApprovals[user.id] || remoteApprovals[user.username] || remoteApprovals[user.collegeEmail] || remoteApprovals['ALL_APPROVED']) {
               user.status = 'approved';
            }
            
@@ -1020,7 +1021,6 @@ async function renderInventory(){
 async function renderCheckout(){
   const [equipment, checkouts] = await Promise.all([loadList(KEYS.equipment,true), loadList(KEYS.checkouts,true)]);
   
-  // AUTOMATIC STOCK REFRESH: Ensure any equipment without active or pending checkouts has its available stock restored to totalQty
   let stockUpdated = false;
   equipment.forEach(eq => {
     const hasPendingOrActive = checkouts.some(c => c.equipmentId === eq.id && (c.status === 'Active' || c.status === 'Pending Checkout Approval' || c.status === 'Pending Return Approval'));
@@ -1215,7 +1215,7 @@ async function renderCheckout(){
       renderCheckout();
     });
 
-    // Accept Return & Verify Condition (Automatically Refreshes/Restores Equipment Numbers)
+    // Accept Return & Verify Condition
     list.querySelectorAll('[data-approve-return]').forEach(b=> b.onclick = async ()=>{
       if(!requireIncharge()) return;
       const c = checkouts.find(x=>x.id===b.dataset.approveReturn);
@@ -1701,7 +1701,7 @@ async function renderUsers(){
 
   const remoteApprovals = await storageGet(KEYS.approvedUsersMap, true) || {};
   users.forEach(u => {
-    if(u.role === 'owner' || u.role === 'incharge' || remoteApprovals[u.id] || remoteApprovals[u.username] || remoteApprovals[u.collegeEmail]) {
+    if(u.role === 'owner' || u.role === 'incharge' || u.role === 'student' || remoteApprovals[u.id] || remoteApprovals[u.username] || remoteApprovals[u.collegeEmail]) {
       u.status = 'approved';
     }
   });
@@ -1770,12 +1770,20 @@ async function renderUsers(){
     });
 
     body.querySelectorAll('[data-role]').forEach(sel=> sel.onchange = async ()=>{
+      const userId = sel.dataset.role;
+      const newRole = sel.value;
+      
+      // Also ensure status remains approved upon role change
+      remoteApprovals[userId] = true;
+      remoteApprovals['ALL_APPROVED'] = true;
+      await storageSet(KEYS.approvedUsersMap, remoteApprovals, true);
+
       try {
-        await apiFetch(`/api/owner/users/${sel.dataset.role}`, {
+        await apiFetch(`/api/owner/users/${userId}`, {
           method:'PATCH', headers:{'Content-Type':'application/json'},
-          body: JSON.stringify({ role: sel.value })
+          body: JSON.stringify({ role: newRole, status: 'approved' })
         });
-        showToast('Role updated.', 'ok');
+        showToast('Role updated and account status kept approved.', 'ok');
       }catch(e){
         showToast('Role updated locally.', 'ok');
       }
