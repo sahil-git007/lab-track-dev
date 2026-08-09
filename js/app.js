@@ -219,7 +219,7 @@ const KEYS = {
   approvedUsersMap:'lab:approved_users_map'
 };
 
-const CURRENT_BUILD_VERSION = 'v3.0.7-personal-notifications-email';
+const CURRENT_BUILD_VERSION = 'v3.0.8-instant-approval-fix';
 
 function buildNav(){
   const nav = [
@@ -254,7 +254,7 @@ async function boot(){
     currentUser = data.user;
 
     const remoteApprovals = await storageGet(KEYS.approvedUsersMap, true) || {};
-    if(currentUser.role === 'owner' || currentUser.role === 'incharge' || remoteApprovals[currentUser.id] || remoteApprovals[currentUser.username] || remoteApprovals[currentUser.collegeEmail]){
+    if(currentUser.role === 'owner' || currentUser.role === 'incharge' || currentUser.status === 'approved' || remoteApprovals[currentUser.id] || remoteApprovals[currentUser.username] || remoteApprovals[currentUser.collegeEmail]){
       currentUser.status = 'approved';
     }
 
@@ -317,7 +317,7 @@ async function checkAndPublishAutoNotice(){
       const autoUpdateNotice = {
         id: uid(),
         title: `Automated System Update (${CURRENT_BUILD_VERSION})`,
-        desc: 'Added personal notification bell and email dispatch simulation for equipment checkouts.',
+        desc: 'Optimized user account approval verification check for instant login access.',
         type: 'SYSTEM',
         time: Date.now()
       };
@@ -343,7 +343,6 @@ async function renderProfileBox(){
   const box = document.getElementById('profileBox');
   const roleLabel = profileRole==='owner' ? 'Owner' : profileRole==='incharge' ? 'Lab In-Charge' : 'Student';
   
-  // Load unread notifications count for current user
   const notifsKey = `lab:notifications:${currentUser.id}`;
   const notifs = await loadList(notifsKey, true);
   const unreadCount = notifs.filter(n => !n.read).length;
@@ -1067,7 +1066,6 @@ async function renderCheckout(){
     const qty = Math.min(parseInt(document.getElementById('coQty').value)||1, eq.availableQty);
     const dueVal = document.getElementById('coDue').value;
     
-    // Hold stock immediately upon request
     eq.availableQty -= qty;
     await saveList(KEYS.equipment, equipment, true);
 
@@ -1080,12 +1078,10 @@ async function renderCheckout(){
     checkouts.unshift(newCheckout);
     await saveList(KEYS.checkouts, checkouts, true);
 
-    // Send email dispatch simulation & in-app notification to user
     const emailTo = currentUser.collegeEmail || currentUser.username;
     console.log(`[Email Dispatch] To: ${emailTo} | Subject: LabTrack Checkout Request Submitted | Body: Your request to checkout ${eq.name} (${qty} unit) has been submitted for admin approval.`);
     showToast(`Checkout requested! Confirmation email sent to ${emailTo}.`, 'ok');
 
-    // Notify all Lab In-Charges and Owners
     try {
       const res = await apiFetch('/api/owner/users');
       if(res.ok){
@@ -1154,7 +1150,6 @@ async function renderCheckout(){
       c.status = 'Active';
       await saveList(KEYS.checkouts, checkouts, true);
 
-      // Send personal in-app notification & simulated email to borrower
       if(c.borrowerId){
         await sendPersonalNotification(c.borrowerId, 'Checkout Accepted', `Your checkout request for ${c.equipmentName} has been accepted by ${profileName}.`);
       }
@@ -1189,7 +1184,6 @@ async function renderCheckout(){
       c.status = 'Pending Return Approval';
       await saveList(KEYS.checkouts, checkouts, true);
 
-      // Notify admins
       try {
         const res = await apiFetch('/api/owner/users');
         if(res.ok){
@@ -1741,6 +1735,12 @@ async function renderUsers(){
       }
 
       if(targetUser) targetUser.status = 'approved';
+      
+      // Send notification to the newly approved user
+      if(targetUser && targetUser.id){
+        await sendPersonalNotification(targetUser.id, 'Account Approved', 'Your account has been approved by the Owner. You can now sign in successfully!');
+      }
+
       showToast('Account approved successfully!', 'ok');
       draw();
     });
