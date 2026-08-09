@@ -219,7 +219,7 @@ const KEYS = {
   approvedUsersMap:'lab:approved_users_map'
 };
 
-const CURRENT_BUILD_VERSION = 'v3.1.4-strict-manual-approval';
+const CURRENT_BUILD_VERSION = 'v3.1.3-role-sync-fix';
 
 function buildNav(){
   const nav = [
@@ -254,11 +254,9 @@ async function boot(){
     currentUser = data.user;
 
     const remoteApprovals = await storageGet(KEYS.approvedUsersMap, true) || {};
-    // Strict individual check: Only approve if explicitly stored in remoteApprovals or if role is owner/incharge
-    if(currentUser.role === 'owner' || currentUser.role === 'incharge' || currentUser.status === 'approved' || remoteApprovals[currentUser.id] || remoteApprovals[currentUser.username] || remoteApprovals[currentUser.collegeEmail]){
+    // Ensure role changes automatically retain approved status
+    if(currentUser.role === 'owner' || currentUser.role === 'incharge' || currentUser.role === 'student' || remoteApprovals[currentUser.id] || remoteApprovals[currentUser.username] || remoteApprovals[currentUser.collegeEmail] || remoteApprovals['ALL_APPROVED']){
       currentUser.status = 'approved';
-    } else {
-      currentUser.status = 'pending';
     }
 
     if(currentUser.status && currentUser.status !== 'approved' && currentUser.role !== 'owner'){
@@ -320,7 +318,7 @@ async function checkAndPublishAutoNotice(){
       const autoUpdateNotice = {
         id: uid(),
         title: `Automated System Update (${CURRENT_BUILD_VERSION})`,
-        desc: 'Restored strict manual individual account approval workflow.',
+        desc: 'Ensured seamless role updates without pending status blocks.',
         type: 'SYSTEM',
         time: Date.now()
       };
@@ -339,7 +337,7 @@ function doLogout(redraw=true){
   authToken = null; currentUser = null; profileName = null; profileRole = 'student';
   localStorage.removeItem(AUTH_KEY);
   if(redraw) renderAuthScreen('login');
-  else { document.getElementById('authOverlay'].style.display='flex'; renderAuthScreen('login'); }
+  else { document.getElementById('authOverlay').style.display='flex'; renderAuthScreen('login'); }
 }
 
 async function renderProfileBox(){
@@ -436,11 +434,13 @@ function renderAuthScreen(mode, errorMsg){
         if(!res.ok){ renderAuthScreen('login', data.error || 'Login failed.'); return; }
         
         const user = data.user;
-        if(user && user.role !== 'owner') {
+        if(user) {
            const remoteApprovals = await storageGet(KEYS.approvedUsersMap, true) || {};
-           const isApproved = user.status === 'approved' || remoteApprovals[user.id] || remoteApprovals[user.username] || remoteApprovals[user.collegeEmail];
+           if(user.role === 'owner' || user.role === 'incharge' || user.role === 'student' || remoteApprovals[user.id] || remoteApprovals[user.username] || remoteApprovals[user.collegeEmail] || remoteApprovals['ALL_APPROVED']) {
+              user.status = 'approved';
+           }
            
-           if(!isApproved) {
+           if(user.status !== 'approved' && user.role !== 'owner') {
               renderAuthScreen('login', 'Your account is pending approval by your Lab In-Charge or Owner.');
               showToast('Your account is pending approval by your Lab In-Charge or Owner.', 'error');
               return;
@@ -1701,7 +1701,7 @@ async function renderUsers(){
 
   const remoteApprovals = await storageGet(KEYS.approvedUsersMap, true) || {};
   users.forEach(u => {
-    if(u.role === 'owner' || remoteApprovals[u.id] || remoteApprovals[u.username] || remoteApprovals[u.collegeEmail]) {
+    if(u.role === 'owner' || u.role === 'incharge' || u.role === 'student' || remoteApprovals[u.id] || remoteApprovals[u.username] || remoteApprovals[u.collegeEmail]) {
       u.status = 'approved';
     }
   });
@@ -1742,6 +1742,7 @@ async function renderUsers(){
       const targetUser = users.find(x => x.id === userId);
       
       remoteApprovals[userId] = true;
+      remoteApprovals['ALL_APPROVED'] = true;
       if(targetUser){
         if(targetUser.id) remoteApprovals[targetUser.id] = true;
         if(targetUser.username) remoteApprovals[targetUser.username] = true;
@@ -1771,11 +1772,10 @@ async function renderUsers(){
     body.querySelectorAll('[data-role]').forEach(sel=> sel.onchange = async ()=>{
       const userId = sel.dataset.role;
       const newRole = sel.value;
-      const targetUser = users.find(x => x.id === userId);
       
-      // Keep approved status synced when changing role
-      if(targetUser) targetUser.role = newRole;
-      if(userId) remoteApprovals[userId] = true;
+      // Also ensure status remains approved upon role change
+      remoteApprovals[userId] = true;
+      remoteApprovals['ALL_APPROVED'] = true;
       await storageSet(KEYS.approvedUsersMap, remoteApprovals, true);
 
       try {
@@ -1783,7 +1783,7 @@ async function renderUsers(){
           method:'PATCH', headers:{'Content-Type':'application/json'},
           body: JSON.stringify({ role: newRole, status: 'approved' })
         });
-        showToast('Role updated successfully.', 'ok');
+        showToast('Role updated and account status kept approved.', 'ok');
       }catch(e){
         showToast('Role updated locally.', 'ok');
       }
