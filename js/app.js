@@ -77,6 +77,20 @@ function containsProfanityOrNonsense(text){
   return false;
 }
 
+/* ============ Personal Notification Dispatcher ============ */
+async function sendPersonalNotification(usernameOrId, title, message){
+  const notifsKey = `lab:notifications:${usernameOrId}`;
+  const list = await loadList(notifsKey, true);
+  list.unshift({
+    id: uid(),
+    title,
+    message,
+    time: Date.now(),
+    read: false
+  });
+  await saveList(notifsKey, list, true);
+}
+
 /* ============ Media & Attachment Renderers ============ */
 function videoEmbedHtml(url){
   if(!url || !isSafeUrl(url)) return '';
@@ -205,7 +219,7 @@ const KEYS = {
   approvedUsersMap:'lab:approved_users_map'
 };
 
-const CURRENT_BUILD_VERSION = 'v3.0.6-checkout-return-approval';
+const CURRENT_BUILD_VERSION = 'v3.0.7-personal-notifications-email';
 
 function buildNav(){
   const nav = [
@@ -303,7 +317,7 @@ async function checkAndPublishAutoNotice(){
       const autoUpdateNotice = {
         id: uid(),
         title: `Automated System Update (${CURRENT_BUILD_VERSION})`,
-        desc: 'Added dual checkout and return verification workflow requiring admin acceptance.',
+        desc: 'Added personal notification bell and email dispatch simulation for equipment checkouts.',
         type: 'SYSTEM',
         time: Date.now()
       };
@@ -325,17 +339,66 @@ function doLogout(redraw=true){
   else { document.getElementById('authOverlay').style.display='flex'; renderAuthScreen('login'); }
 }
 
-function renderProfileBox(){
+async function renderProfileBox(){
   const box = document.getElementById('profileBox');
   const roleLabel = profileRole==='owner' ? 'Owner' : profileRole==='incharge' ? 'Lab In-Charge' : 'Student';
+  
+  // Load unread notifications count for current user
+  const notifsKey = `lab:notifications:${currentUser.id}`;
+  const notifs = await loadList(notifsKey, true);
+  const unreadCount = notifs.filter(n => !n.read).length;
+
   box.innerHTML = `
-    <div class="profile-pill">
+    <div class="profile-pill" style="display:flex;align-items:center;gap:10px;">
+      <button id="notifBellBtn" style="background:none;border:none;cursor:pointer;position:relative;font-size:1.1rem;padding:2px;" title="Personal Notifications">
+        🔔 ${unreadCount > 0 ? `<span style="position:absolute;top:-4px;right:-4px;background:var(--rust);color:#fff;border-radius:50%;font-size:9px;padding:2px 5px;font-weight:700;">${unreadCount}</span>` : ''}
+      </button>
       <span class="dot"></span><span>${esc(profileName)}</span>
       <span class="badge ${profileRole==='owner'?'badge-rust':profileRole==='incharge'?'badge-warn':'badge-neutral'}">${roleLabel}</span>
       <span class="tag-id" style="color:var(--ink-soft);">${esc(currentUser ? currentUser.collegeCode : '')}</span>
       <button id="logoutBtn">log out</button>
     </div>`;
+
   document.getElementById('logoutBtn').onclick = ()=> doLogout(true);
+  document.getElementById('notifBellBtn').onclick = ()=> showPersonalNotificationsModal(notifsKey, notifs);
+}
+
+function showPersonalNotificationsModal(notifsKey, notifs){
+  let modal = document.getElementById('notifModal');
+  if(!modal){
+    modal = document.createElement('div');
+    modal.id = 'notifModal';
+    modal.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(9,15,28,0.85);backdrop-filter:blur(8px);display:flex;align-items:center;justify-content:center;padding:20px;';
+    document.body.appendChild(modal);
+  }
+  modal.style.display = 'flex';
+  modal.innerHTML = `
+    <div style="background:var(--card);border:1px solid var(--grid);border-radius:16px;padding:28px;max-width:440px;width:100%;box-shadow:0 24px 64px rgba(0,0,0,0.4);position:relative;max-height:80vh;display:flex;flex-direction:column;">
+      <button id="closeNotifModal" style="position:absolute;top:12px;right:14px;background:none;border:none;font-size:1.4rem;color:var(--ink-soft);cursor:pointer;" aria-label="Close">×</button>
+      <h3 style="margin-bottom:14px;display:flex;align-items:center;gap:8px;">🔔 Personal Notifications</h3>
+      <div style="overflow-y:auto;flex:1;display:flex;flex-direction:column;gap:10px;padding-right:4px;">
+        ${notifs.length ? notifs.map(n=>`
+          <div style="background:var(--paper);border:1px solid var(--grid);border-radius:10px;padding:12px;border-left:3px solid ${n.read?'var(--grid)':'var(--accent)'};">
+            <div style="font-weight:700;font-size:13.5px;color:var(--ink);">${esc(n.title)}</div>
+            <div style="font-size:13px;color:var(--ink-soft);margin-top:4px;line-height:1.4;">${esc(n.message)}</div>
+            <div style="font-size:10.5px;color:var(--ink-soft);margin-top:6px;text-align:right;">${fmtTime(n.time)}</div>
+          </div>
+        `).join('') : `<div style="text-align:center;color:var(--ink-soft);padding:30px 0;font-size:13.5px;">No notifications yet.</div>`}
+      </div>
+      <button id="markAllReadBtn" class="btn btn-sm btn-primary" style="margin-top:16px;">Mark all as read</button>
+    </div>
+  `;
+
+  document.getElementById('closeNotifModal').onclick = ()=> modal.style.display = 'none';
+  modal.onclick = (e)=>{ if(e.target === modal) modal.style.display = 'none'; };
+  
+  document.getElementById('markAllReadBtn').onclick = async ()=>{
+    notifs.forEach(n => n.read = true);
+    await saveList(notifsKey, notifs, true);
+    modal.style.display = 'none';
+    renderProfileBox();
+    showToast('All notifications marked as read.', 'ok');
+  };
 }
 
 /* ============ Auth screens (login / register) ============ */
@@ -1008,14 +1071,32 @@ async function renderCheckout(){
     eq.availableQty -= qty;
     await saveList(KEYS.equipment, equipment, true);
 
-    checkouts.unshift({
+    const newCheckout = {
       id: uid(), equipmentId: eq.id, equipmentName: eq.name, equipmentTag: eq.tag, qty,
-      borrower: profileName, borrowerId: currentUser.id, purpose: purpose,
+      borrower: profileName, borrowerId: currentUser.id, borrowerEmail: currentUser.collegeEmail || currentUser.username, purpose: purpose,
       checkoutTime: Date.now(), dueTime: dueVal ? new Date(dueVal).getTime() : null,
       returnTime: null, status:'Pending Checkout Approval'
-    });
+    };
+    checkouts.unshift(newCheckout);
     await saveList(KEYS.checkouts, checkouts, true);
-    showToast('Checkout request submitted for Lab In-Charge & Owner approval.', 'ok');
+
+    // Send email dispatch simulation & in-app notification to user
+    const emailTo = currentUser.collegeEmail || currentUser.username;
+    console.log(`[Email Dispatch] To: ${emailTo} | Subject: LabTrack Checkout Request Submitted | Body: Your request to checkout ${eq.name} (${qty} unit) has been submitted for admin approval.`);
+    showToast(`Checkout requested! Confirmation email sent to ${emailTo}.`, 'ok');
+
+    // Notify all Lab In-Charges and Owners
+    try {
+      const res = await apiFetch('/api/owner/users');
+      if(res.ok){
+        const allUsers = (await res.json()).users;
+        const admins = allUsers.filter(u => u.role === 'incharge' || u.role === 'owner');
+        for(let admin of admins){
+          await sendPersonalNotification(admin.id, 'New Checkout Approval Request', `${profileName} requested to checkout ${eq.name} (×${qty}).`);
+        }
+      }
+    }catch(err){ console.error('Admin notification dispatch failed', err); }
+
     renderCheckout();
   };
 
@@ -1058,7 +1139,7 @@ async function renderCheckout(){
         </div>
         <div class="tag-body">
           ${c.purpose? esc(c.purpose)+'<br/>':''}
-          Borrower: <strong>${esc(c.borrower)}</strong> · Requested/Out: ${fmtTime(c.checkoutTime)}
+          Borrower: <strong>${esc(c.borrower)}</strong> (${esc(c.borrowerEmail || '—')}) · Requested/Out: ${fmtTime(c.checkoutTime)}
           ${c.dueTime? ' · Due: '+fmtTime(c.dueTime):''}
           ${c.returnTime? ' · Returned: '+fmtTime(c.returnTime):''}
           ${actionBtn}
@@ -1072,7 +1153,16 @@ async function renderCheckout(){
       const c = checkouts.find(x=>x.id===b.dataset.approveCo);
       c.status = 'Active';
       await saveList(KEYS.checkouts, checkouts, true);
-      showToast('Checkout request accepted.', 'ok');
+
+      // Send personal in-app notification & simulated email to borrower
+      if(c.borrowerId){
+        await sendPersonalNotification(c.borrowerId, 'Checkout Accepted', `Your checkout request for ${c.equipmentName} has been accepted by ${profileName}.`);
+      }
+      if(c.borrowerEmail){
+        console.log(`[Email Dispatch] To: ${c.borrowerEmail} | Subject: Checkout Request Accepted | Body: Your checkout for ${c.equipmentName} has been approved.`);
+      }
+
+      showToast('Checkout request accepted and borrower notified.', 'ok');
       renderCheckout();
     });
 
@@ -1084,6 +1174,11 @@ async function renderCheckout(){
       const eq = equipment.find(x=>x.id===c.equipmentId);
       if(eq) eq.availableQty = Math.min(eq.totalQty, eq.availableQty + c.qty);
       await Promise.all([saveList(KEYS.checkouts, checkouts, true), saveList(KEYS.equipment, equipment, true)]);
+
+      if(c.borrowerId){
+        await sendPersonalNotification(c.borrowerId, 'Checkout Rejected', `Your checkout request for ${c.equipmentName} was declined.`);
+      }
+
       showToast('Checkout request rejected, stock restored.', 'ok');
       renderCheckout();
     });
@@ -1093,6 +1188,19 @@ async function renderCheckout(){
       const c = checkouts.find(x=>x.id===b.dataset.requestReturn);
       c.status = 'Pending Return Approval';
       await saveList(KEYS.checkouts, checkouts, true);
+
+      // Notify admins
+      try {
+        const res = await apiFetch('/api/owner/users');
+        if(res.ok){
+          const allUsers = (await res.json()).users;
+          const admins = allUsers.filter(u => u.role === 'incharge' || u.role === 'owner');
+          for(let admin of admins){
+            await sendPersonalNotification(admin.id, 'Return Verification Approval', `${profileName} has requested to return ${c.equipmentName}. Please verify condition.`);
+          }
+        }
+      }catch(err){ console.error('Admin notification dispatch failed', err); }
+
       showToast('Return verification request sent to Owner & Lab In-Charge.', 'ok');
       renderCheckout();
     });
@@ -1106,6 +1214,14 @@ async function renderCheckout(){
       const eq = equipment.find(x=>x.id===c.equipmentId);
       if(eq) eq.availableQty = Math.min(eq.totalQty, eq.availableQty + c.qty);
       await Promise.all([saveList(KEYS.checkouts, checkouts, true), saveList(KEYS.equipment, equipment, true)]);
+
+      if(c.borrowerId){
+        await sendPersonalNotification(c.borrowerId, 'Return Accepted & Verified', `Your return of ${c.equipmentName} has been verified and accepted in good condition.`);
+      }
+      if(c.borrowerEmail){
+        console.log(`[Email Dispatch] To: ${c.borrowerEmail} | Subject: Equipment Return Verified | Body: Your return of ${c.equipmentName} has been inspected and accepted.`);
+      }
+
       showToast('Return verified and accepted! Stock restored.', 'ok');
       renderCheckout();
     });
@@ -1116,6 +1232,11 @@ async function renderCheckout(){
       const c = checkouts.find(x=>x.id===b.dataset.rejectReturn);
       c.status = 'Active';
       await saveList(KEYS.checkouts, checkouts, true);
+
+      if(c.borrowerId){
+        await sendPersonalNotification(c.borrowerId, 'Return Rejected - Condition Issue', `Your return of ${c.equipmentName} was rejected due to a condition discrepancy. Please contact lab in-charge.`);
+      }
+
       showToast('Return rejected due to condition discrepancy. Item remains checked out.', 'warn');
       renderCheckout();
     });
