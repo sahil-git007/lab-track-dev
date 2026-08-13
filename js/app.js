@@ -8,10 +8,19 @@ function authHeaders(extra={}){
   if(authToken) h['Authorization'] = 'Bearer ' + authToken;
   return h;
 }
-async function apiFetch(path, opts={}){
-  const res = await fetch(path, { ...opts, headers: authHeaders(opts.headers||{}) });
-  if(res.status === 401){ doLogout(false); throw new Error('Session expired'); }
-  return res;
+async function apiFetch(path, opts={}, timeoutMs=12000){
+  const controller = new AbortController();
+  const timer = setTimeout(()=> controller.abort(), timeoutMs);
+  try{
+    const res = await fetch(path, { ...opts, headers: authHeaders(opts.headers||{}), signal: controller.signal });
+    clearTimeout(timer);
+    if(res.status === 401){ doLogout(false); throw new Error('Session expired'); }
+    return res;
+  }catch(e){
+    clearTimeout(timer);
+    if(e.name === 'AbortError') throw new Error('Request timed out — server is not responding.');
+    throw e;
+  }
 }
 async function storageGet(key, shared=false){
   try{
@@ -193,7 +202,7 @@ const KEYS = {
   approvedUsersMap:'lab:approved_users_map'
 };
 
-const CURRENT_BUILD_VERSION = 'v3.1.3-role-sync-fix';
+const CURRENT_BUILD_VERSION = 'v3.1.4-timeout-fix';
 
 function buildNav(){
   const nav = [
@@ -219,35 +228,55 @@ function buildNav(){
 /* ============ Boot, Theme & Auto Version Check ============ */
 async function boot(){
   initThemeToggle();
+
   if(!authToken){ renderAuthScreen('login'); return; }
+
+  // Watchdog: if boot takes more than 15 seconds, the server is unresponsive.
+  // Clear the stale token and drop to login so user is never stuck on "Initializing".
+  const bootWatchdog = setTimeout(()=>{
+    console.error('[LabTrack] Boot timed out after 15s — clearing session and returning to login.');
+    localStorage.removeItem(AUTH_KEY);
+    authToken = null;
+    renderAuthScreen('login', 'The server took too long to respond. Please try again or check your connection.');
+  }, 15000);
+
   try{
     const res = await apiFetch('/api/auth/me');
     if(!res.ok) throw new Error('not authed');
     const data = await res.json();
     currentUser = data.user;
+
     const remoteApprovals = await storageGet(KEYS.approvedUsersMap, true) || {};
     if(currentUser.role === 'owner' || currentUser.role === 'incharge' ||
        remoteApprovals[currentUser.id] || remoteApprovals[currentUser.username] ||
        remoteApprovals[currentUser.collegeEmail]){
       currentUser.status = 'approved';
     }
+
     if(currentUser.status && currentUser.status !== 'approved' && currentUser.role !== 'owner'){
+      clearTimeout(bootWatchdog);
       doLogout(false);
       renderAuthScreen('login', 'Your account is pending approval by your Lab In-Charge or Owner.');
       return;
     }
+
     profileName = currentUser.fullName || 'User';
     profileRole = currentUser.role || 'student';
   }catch(e){
+    clearTimeout(bootWatchdog);
     doLogout(false);
     return;
   }
+  clearTimeout(bootWatchdog);
   document.getElementById('authOverlay').style.display = 'none';
   tagCounter = parseInt(await storageGet(KEYS.tagCounter, true)) || 1;
+
   await checkAndPublishAutoNotice();
+
   renderProfileBox();
   renderSidebar();
   initHamburger();
+
   const urlParams = new URLSearchParams(window.location.search);
   const scanParam = urlParams.get('scan');
   if(scanParam){
@@ -258,6 +287,7 @@ async function boot(){
     lookupAndShow(scanParam);
     return;
   }
+
   await switchTab('dashboard');
 }
 
@@ -285,7 +315,7 @@ async function checkAndPublishAutoNotice(){
       const autoUpdateNotice = {
         id: uid(),
         title: `Automated System Update (${CURRENT_BUILD_VERSION})`,
-        desc: 'Ensured seamless role updates without pending status blocks.',
+        desc: 'Added server timeout protection — app no longer freezes on slow connections.',
         type: 'SYSTEM',
         time: Date.now()
       };
@@ -393,18 +423,18 @@ function renderAuthScreen(mode, errorMsg){
         const data = await res.json();
         if(!res.ok){ renderAuthScreen('login', data.error || 'Login failed.'); return; }
         const user = data.user;
-        if(user) {
-           const remoteApprovals = await storageGet(KEYS.approvedUsersMap, true) || {};
-           if(user.role === 'owner' || user.role === 'incharge' ||
-              remoteApprovals[user.id] || remoteApprovals[user.username] ||
-              remoteApprovals[user.collegeEmail]) {
-              user.status = 'approved';
-           }
-           if(user.status !== 'approved' && user.role !== 'owner' && user.role !== 'incharge') {
-              renderAuthScreen('login', 'Your account is pending approval by your Lab In-Charge or Owner.');
-              showToast('Your account is pending approval.', 'error');
-              return;
-           }
+        if(user){
+          const remoteApprovals = await storageGet(KEYS.approvedUsersMap, true) || {};
+          if(user.role === 'owner' || user.role === 'incharge' ||
+             remoteApprovals[user.id] || remoteApprovals[user.username] ||
+             remoteApprovals[user.collegeEmail]){
+            user.status = 'approved';
+          }
+          if(user.status !== 'approved' && user.role !== 'owner' && user.role !== 'incharge'){
+            renderAuthScreen('login', 'Your account is pending approval by your Lab In-Charge or Owner.');
+            showToast('Your account is pending approval.', 'error');
+            return;
+          }
         }
         authToken = data.token;
         localStorage.setItem(AUTH_KEY, authToken);
@@ -414,7 +444,6 @@ function renderAuthScreen(mode, errorMsg){
     document.getElementById('loSubmit').onclick = submit;
     card.querySelectorAll('input').forEach(inp=> inp.addEventListener('keydown', e=>{ if(e.key==='Enter') submit(); }));
   } else {
-    card.classList.add('register-mode');
     card.innerHTML = `
       <h2>Create your account</h2>
       <p class="sub">New accounts require approval from your Lab In-Charge or Owner before signing in.</p>
@@ -544,10 +573,7 @@ function renderSidebar(){
     ${g.items.map(it=>`<div class="nav-item ${currentTab===it.id?'active':''}" data-tab="${it.id}" role="button" tabindex="0"><span class="ic">${it.icon}</span><span>${it.label}</span></div>`).join('')}
   `).join('');
   sb.querySelectorAll('.nav-item').forEach(el=>{
-    el.onclick = ()=>{
-      switchTab(el.dataset.tab);
-      closeSidebar();
-    };
+    el.onclick = ()=>{ switchTab(el.dataset.tab); closeSidebar(); };
     el.onkeydown = (e)=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); el.click(); } };
   });
 }
@@ -642,8 +668,7 @@ async function renderNotices(){
       const type = document.getElementById('noticeType').value;
       if(!title || !desc){ showToast('Fill in both title and description.', 'warn'); return; }
       if(containsProfanityOrNonsense(title) || containsProfanityOrNonsense(desc)){
-        showToast('Invalid or meaningless text detected. Please enter a professional update.', 'error');
-        return;
+        showToast('Invalid or meaningless text detected. Please enter a professional update.', 'error'); return;
       }
       notices.unshift({ id: uid(), title, desc, type, time: Date.now() });
       const ok = await saveList(KEYS.notices, notices, true);
@@ -653,8 +678,7 @@ async function renderNotices(){
     };
     main.querySelectorAll('[data-delete-notice]').forEach(b=>{
       b.onclick = async ()=>{
-        const id = b.dataset.deleteNotice;
-        const filtered = notices.filter(n => n.id !== id);
+        const filtered = notices.filter(n => n.id !== b.dataset.deleteNotice);
         await saveList(KEYS.notices, filtered, true);
         showToast('Update removed.', 'ok');
         renderNotices();
@@ -689,8 +713,8 @@ async function renderAnalytics(){
       <div class="card stat-card"><div class="num">${equipment.length}</div><div class="lbl">Equipment types</div></div>
       <div class="card stat-card ok"><div class="num">${availableUnits}/${totalUnits}</div><div class="lbl">Units available</div></div>
       <div class="card stat-card"><div class="num">${activeCheckouts.length}</div><div class="lbl">Checked out now</div></div>
-      <div class="card stat-card ${overdue.length? 'alert':''}"><div class="num">${overdue.length}</div><div class="lbl">Overdue returns</div></div>
-      <div class="card stat-card ${underMaint? 'warn':''}"><div class="num">${underMaint}</div><div class="lbl">Under maintenance</div></div>
+      <div class="card stat-card ${overdue.length?'alert':''}"><div class="num">${overdue.length}</div><div class="lbl">Overdue returns</div></div>
+      <div class="card stat-card ${underMaint?'warn':''}"><div class="num">${underMaint}</div><div class="lbl">Under maintenance</div></div>
     </div>
     <div class="grid grid-2" style="align-items:start;">
       <div class="panel">
@@ -736,25 +760,13 @@ async function renderInventory(){
           <div class="form-group"><label>Total quantity</label><input id="eqQty" type="number" min="1" value="1" /></div>
           <div class="form-group"><label>Price (₹ per unit)</label><input id="eqPrice" type="number" min="0" step="0.01" placeholder="e.g. 25000" /></div>
         </div>
-        <div class="form-row">
-          <div class="form-group"><label>Complete description</label><textarea id="eqDescription" placeholder="Model number, specs, manufacturer, anything worth knowing at a glance…"></textarea></div>
-        </div>
-        <div class="form-row">
-          <div class="form-group"><label>How to use</label><textarea id="eqUsage" placeholder="Setup steps, safety notes, calibration reminders…"></textarea></div>
-        </div>
-        <div class="form-row">
-          <div class="form-group"><label>Video link (optional)</label><input id="eqVideo" type="url" placeholder="YouTube, Drive, or direct .mp4 link" /></div>
-        </div>
-        <div class="form-row">
-          <div class="form-group"><label>Photo links (optional)</label><textarea id="eqPhotos" placeholder="Paste multiple photo image URLs separated by commas or new lines"></textarea></div>
-        </div>
-        <div class="form-row">
-          <div class="form-group"><label>Extra Links / Manuals (optional)</label><textarea id="eqLinks" placeholder="Format: Title | https://url (one per line)"></textarea></div>
-        </div>
+        <div class="form-row"><div class="form-group"><label>Complete description</label><textarea id="eqDescription" placeholder="Model number, specs, manufacturer…"></textarea></div></div>
+        <div class="form-row"><div class="form-group"><label>How to use</label><textarea id="eqUsage" placeholder="Setup steps, safety notes, calibration reminders…"></textarea></div></div>
+        <div class="form-row"><div class="form-group"><label>Video link (optional)</label><input id="eqVideo" type="url" placeholder="YouTube, Drive, or direct .mp4 link" /></div></div>
+        <div class="form-row"><div class="form-group"><label>Photo links (optional)</label><textarea id="eqPhotos" placeholder="Paste multiple photo image URLs separated by commas or new lines"></textarea></div></div>
+        <div class="form-row"><div class="form-group"><label>Extra Links / Manuals (optional)</label><textarea id="eqLinks" placeholder="Format: Title | https://url (one per line)"></textarea></div></div>
         <button class="btn btn-primary" id="eqSubmit">Add equipment</button>
-      ` : `
-        <p style="margin:0;">Only Lab In-Charge accounts can register new equipment. Ask your Lab In-Charge or Owner to upgrade your role from Manage Users.</p>
-      `}
+      ` : `<p style="margin:0;">Only Lab In-Charge accounts can register new equipment.</p>`}
     </div>
     <div class="filter-row">
       <input id="eqSearch" placeholder="Search equipment…" style="flex:1;min-width:180px;" />
@@ -773,7 +785,8 @@ async function renderInventory(){
       const priceVal = document.getElementById('eqPrice').value;
       const tag = await nextTag();
       equipment.unshift({
-        id: uid(), tag, name, category: document.getElementById('eqCategory').value.trim()||'General',
+        id: uid(), tag, name,
+        category: document.getElementById('eqCategory').value.trim()||'General',
         location: document.getElementById('eqLocation').value.trim()||'Unassigned',
         price: priceVal ? parseFloat(priceVal) : null,
         description: document.getElementById('eqDescription').value.trim(),
@@ -796,6 +809,7 @@ async function renderInventory(){
   const confirmingRemove = new Set();
   const editingDetails = new Set();
   const activeMediaTabs = {};
+
   const drawList = ()=>{
     const q = document.getElementById('eqSearch').value.toLowerCase();
     const fc = document.getElementById('eqFilterCat').value;
@@ -832,9 +846,9 @@ async function renderInventory(){
           <div style="margin-top:8px;">Available: <strong class="mono">${e.availableQty} / ${e.totalQty}</strong>${fmtPrice(e.price) ? ` · Price: <strong class="mono">${fmtPrice(e.price)}</strong>` : ''}</div>
           ${e.description ? `<div style="margin-top:6px;color:var(--ink-soft);">${esc(e.description.length>140 ? e.description.slice(0,140)+'…' : e.description)}</div>` : ''}
           <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px;">
-            ${e.videoUrl ? `<button class="btn btn-sm ${showVideoTab?'btn-primary':''}" data-toggle-media="${e.id}" data-media-type="video">${showVideoTab ? '▼ Hide video' : '▶ See attached video'}</button>` : ''}
-            ${e.photoUrls ? `<button class="btn btn-sm ${showPhotoTab?'btn-primary':''}" data-toggle-media="${e.id}" data-media-type="photo">${showPhotoTab ? '▼ Hide photos' : '🖼️ See attached photos'}</button>` : ''}
-            ${e.extraLinks ? `<button class="btn btn-sm ${showLinksTab?'btn-primary':''}" data-toggle-media="${e.id}" data-media-type="links">${showLinksTab ? '▼ Hide links' : '🔗 See extra links'}</button>` : ''}
+            ${e.videoUrl ? `<button class="btn btn-sm ${showVideoTab?'btn-primary':''}" data-toggle-media="${e.id}" data-media-type="video">${showVideoTab?'▼ Hide video':'▶ See attached video'}</button>` : ''}
+            ${e.photoUrls ? `<button class="btn btn-sm ${showPhotoTab?'btn-primary':''}" data-toggle-media="${e.id}" data-media-type="photo">${showPhotoTab?'▼ Hide photos':'🖼️ See attached photos'}</button>` : ''}
+            ${e.extraLinks ? `<button class="btn btn-sm ${showLinksTab?'btn-primary':''}" data-toggle-media="${e.id}" data-media-type="links">${showLinksTab?'▼ Hide links':'🔗 See extra links'}</button>` : ''}
           </div>
           ${showVideoTab ? videoEmbedHtml(e.videoUrl) : ''}
           ${showPhotoTab ? photosGalleryHtml(e.photoUrls) : ''}
@@ -869,11 +883,12 @@ async function renderInventory(){
         </div>
       </div>`;
     }).join('') + `</div>`;
+
     filtered.forEach(e=> renderQR('qr-'+e.id, e.tag, 62, e.tag, e.name));
+
     list.querySelectorAll('[data-toggle-media]').forEach(b=>{
       b.onclick = ()=>{
-        const eqId = b.dataset.toggleMedia;
-        const type = b.dataset.mediaType;
+        const eqId = b.dataset.toggleMedia; const type = b.dataset.mediaType;
         if(activeMediaTabs[eqId] === type){ delete activeMediaTabs[eqId]; } else { activeMediaTabs[eqId] = type; }
         drawList();
       };
@@ -898,31 +913,23 @@ async function renderInventory(){
       const ok = await saveList(KEYS.equipment, equipment, true);
       if(!ok){ showToast('Could not save — check your connection and try again.', 'error'); return; }
       showToast(`${eq.name} details and quantity updated successfully!`, 'ok');
-      editingDetails.delete(eqId);
-      drawList();
+      editingDetails.delete(eqId); drawList();
     });
     list.querySelectorAll('[data-remove]').forEach(b=> b.onclick = ()=>{ confirmingRemove.add(b.dataset.remove); drawList(); });
-    list.querySelectorAll('[data-cancel-remove]').forEach(b=> b.onclick = async ()=>{ confirmingRemove.delete(b.dataset.cancelRemove); drawList(); });
+    list.querySelectorAll('[data-cancel-remove]').forEach(b=> b.onclick = ()=>{ confirmingRemove.delete(b.dataset.cancelRemove); drawList(); });
     list.querySelectorAll('[data-confirm-remove]').forEach(b=> b.onclick = async ()=>{
       if(!requireIncharge()) return;
       const eqId = b.dataset.confirmRemove;
       const eq = equipment.find(x=>x.id===eqId);
       const stillOut = checkouts.some(c=>c.equipmentId===eqId && c.status==='Active');
-      if(stillOut && profileRole !== 'owner'){
-        showToast(`${eq ? eq.name : 'This item'} still has an active checkout — it must be returned before removal.`, 'warn');
-        confirmingRemove.delete(eqId); drawList(); return;
-      }
+      if(stillOut && profileRole !== 'owner'){ showToast(`${eq?eq.name:'This item'} still has an active checkout — return it first.`, 'warn'); confirmingRemove.delete(eqId); drawList(); return; }
       const idx = equipment.findIndex(x=>x.id===eqId);
       if(idx>-1) equipment.splice(idx,1);
       const updatedMaint = maintenance.filter(m=>m.equipmentId!==eqId);
       const updatedCheckouts = checkouts.filter(c=>c.equipmentId!==eqId);
-      const [okEq, okMaint, okCo] = await Promise.all([
-        saveList(KEYS.equipment, equipment, true),
-        saveList(KEYS.maintenance, updatedMaint, true),
-        saveList(KEYS.checkouts, updatedCheckouts, true)
-      ]);
-      if(!okEq || !okMaint || !okCo){ showToast('Could not remove — check your connection and try again.', 'error'); return; }
-      showToast(`${eq ? eq.name : 'Equipment'} removed.`, 'ok');
+      const [okEq,okMaint,okCo] = await Promise.all([saveList(KEYS.equipment,equipment,true),saveList(KEYS.maintenance,updatedMaint,true),saveList(KEYS.checkouts,updatedCheckouts,true)]);
+      if(!okEq||!okMaint||!okCo){ showToast('Could not remove — check your connection.', 'error'); return; }
+      showToast(`${eq?eq.name:'Equipment'} removed.`, 'ok');
       confirmingRemove.delete(eqId);
       renderInventory();
     });
@@ -984,21 +991,22 @@ async function renderCheckout(){
     await saveList(KEYS.equipment, equipment, true);
     const newCheckout = {
       id: uid(), equipmentId: eq.id, equipmentName: eq.name, equipmentTag: eq.tag, qty,
-      borrower: profileName, borrowerId: currentUser.id, borrowerEmail: currentUser.collegeEmail || currentUser.username, purpose: purpose,
+      borrower: profileName, borrowerId: currentUser.id, borrowerEmail: currentUser.collegeEmail || currentUser.username, purpose,
       checkoutTime: Date.now(), dueTime: dueVal ? new Date(dueVal).getTime() : null,
       returnTime: null, status:'Pending Checkout Approval'
     };
     checkouts.unshift(newCheckout);
     await saveList(KEYS.checkouts, checkouts, true);
-    showToast(`Checkout requested! Confirmation email sent to ${currentUser.collegeEmail || currentUser.username}.`, 'ok');
+    showToast(`Checkout requested! Confirmation sent to ${currentUser.collegeEmail || currentUser.username}.`, 'ok');
     try {
       const res = await apiFetch('/api/owner/users');
       if(res.ok){
         const allUsers = (await res.json()).users;
-        const admins = allUsers.filter(u => u.role === 'incharge' || u.role === 'owner');
-        for(let admin of admins){ await sendPersonalNotification(admin.id, 'New Checkout Approval Request', `${profileName} requested to checkout ${eq.name} (×${qty}).`); }
+        for(let admin of allUsers.filter(u => u.role === 'incharge' || u.role === 'owner')){
+          await sendPersonalNotification(admin.id, 'New Checkout Approval Request', `${profileName} requested to checkout ${eq.name} (×${qty}).`);
+        }
       }
-    }catch(err){ console.error('Admin notification dispatch failed', err); }
+    }catch(err){ console.error('Admin notification failed', err); }
     renderCheckout();
   };
   const list = document.getElementById('coList');
@@ -1037,20 +1045,21 @@ async function renderCheckout(){
         </div>
         <div class="tag-body">
           ${c.purpose? esc(c.purpose)+'<br/>':''}
-          Borrower: <strong>${esc(c.borrower)}</strong> (${esc(c.borrowerEmail || '—')}) · Requested/Out: ${fmtTime(c.checkoutTime)}
+          Borrower: <strong>${esc(c.borrower)}</strong> (${esc(c.borrowerEmail||'—')}) · ${fmtTime(c.checkoutTime)}
           ${c.dueTime? ' · Due: '+fmtTime(c.dueTime):''}
           ${c.returnTime? ' · Returned: '+fmtTime(c.returnTime):''}
           ${actionBtn}
         </div>
       </div>`;
     }).join('');
+
     list.querySelectorAll('[data-approve-co]').forEach(b=> b.onclick = async ()=>{
       if(!requireIncharge()) return;
       const c = checkouts.find(x=>x.id===b.dataset.approveCo);
       c.status = 'Active';
       await saveList(KEYS.checkouts, checkouts, true);
-      if(c.borrowerId){ await sendPersonalNotification(c.borrowerId, 'Checkout Accepted', `Your checkout request for ${c.equipmentName} has been accepted by ${profileName}.`); }
-      showToast('Checkout request accepted and borrower notified.', 'ok');
+      if(c.borrowerId) await sendPersonalNotification(c.borrowerId, 'Checkout Accepted', `Your checkout for ${c.equipmentName} was accepted by ${profileName}.`);
+      showToast('Checkout accepted and borrower notified.', 'ok');
       renderCheckout();
     });
     list.querySelectorAll('[data-reject-co]').forEach(b=> b.onclick = async ()=>{
@@ -1059,9 +1068,9 @@ async function renderCheckout(){
       c.status = 'Rejected';
       const eq = equipment.find(x=>x.id===c.equipmentId);
       if(eq) eq.availableQty = Math.min(eq.totalQty, eq.availableQty + c.qty);
-      await Promise.all([saveList(KEYS.checkouts, checkouts, true), saveList(KEYS.equipment, equipment, true)]);
-      if(c.borrowerId){ await sendPersonalNotification(c.borrowerId, 'Checkout Rejected', `Your checkout request for ${c.equipmentName} was declined.`); }
-      showToast('Checkout request rejected, stock restored.', 'ok');
+      await Promise.all([saveList(KEYS.checkouts,checkouts,true), saveList(KEYS.equipment,equipment,true)]);
+      if(c.borrowerId) await sendPersonalNotification(c.borrowerId, 'Checkout Rejected', `Your checkout for ${c.equipmentName} was declined.`);
+      showToast('Checkout rejected, stock restored.', 'ok');
       renderCheckout();
     });
     list.querySelectorAll('[data-request-return]').forEach(b=> b.onclick = async ()=>{
@@ -1072,11 +1081,12 @@ async function renderCheckout(){
         const res = await apiFetch('/api/owner/users');
         if(res.ok){
           const allUsers = (await res.json()).users;
-          const admins = allUsers.filter(u => u.role === 'incharge' || u.role === 'owner');
-          for(let admin of admins){ await sendPersonalNotification(admin.id, 'Return Verification Approval', `${profileName} has requested to return ${c.equipmentName}. Please verify condition.`); }
+          for(let admin of allUsers.filter(u => u.role === 'incharge' || u.role === 'owner')){
+            await sendPersonalNotification(admin.id, 'Return Verification Request', `${profileName} requested to return ${c.equipmentName}. Please verify condition.`);
+          }
         }
-      }catch(err){ console.error('Admin notification dispatch failed', err); }
-      showToast('Return verification request sent to Owner & Lab In-Charge.', 'ok');
+      }catch(err){ console.error('Admin notification failed', err); }
+      showToast('Return request sent to Lab In-Charge.', 'ok');
       renderCheckout();
     });
     list.querySelectorAll('[data-approve-return]').forEach(b=> b.onclick = async ()=>{
@@ -1084,10 +1094,10 @@ async function renderCheckout(){
       const c = checkouts.find(x=>x.id===b.dataset.approveReturn);
       c.status = 'Returned'; c.returnTime = Date.now();
       const eq = equipment.find(x=>x.id===c.equipmentId);
-      if(eq){ eq.availableQty = Math.min(eq.totalQty, eq.availableQty + c.qty); }
-      await Promise.all([saveList(KEYS.checkouts, checkouts, true), saveList(KEYS.equipment, equipment, true)]);
-      if(c.borrowerId){ await sendPersonalNotification(c.borrowerId, 'Return Accepted & Verified', `Your return of ${c.equipmentName} has been verified and accepted in good condition.`); }
-      showToast('Return verified and accepted! Equipment stock numbers refreshed.', 'ok');
+      if(eq) eq.availableQty = Math.min(eq.totalQty, eq.availableQty + c.qty);
+      await Promise.all([saveList(KEYS.checkouts,checkouts,true), saveList(KEYS.equipment,equipment,true)]);
+      if(c.borrowerId) await sendPersonalNotification(c.borrowerId, 'Return Accepted & Verified', `Your return of ${c.equipmentName} was accepted in good condition.`);
+      showToast('Return verified! Stock refreshed.', 'ok');
       renderCheckout();
     });
     list.querySelectorAll('[data-reject-return]').forEach(b=> b.onclick = async ()=>{
@@ -1095,8 +1105,8 @@ async function renderCheckout(){
       const c = checkouts.find(x=>x.id===b.dataset.rejectReturn);
       c.status = 'Active';
       await saveList(KEYS.checkouts, checkouts, true);
-      if(c.borrowerId){ await sendPersonalNotification(c.borrowerId, 'Return Rejected - Condition Issue', `Your return of ${c.equipmentName} was rejected due to a condition discrepancy. Please contact lab in-charge.`); }
-      showToast('Return rejected due to condition discrepancy. Item remains checked out.', 'warn');
+      if(c.borrowerId) await sendPersonalNotification(c.borrowerId, 'Return Rejected', `Your return of ${c.equipmentName} was rejected due to condition issue. Contact lab in-charge.`);
+      showToast('Return rejected — item remains checked out.', 'warn');
       renderCheckout();
     });
   };
@@ -1126,7 +1136,7 @@ async function renderUsage(){
     </div>
   `;
   const list = document.getElementById('usList');
-  if(!sorted.length){ list.innerHTML = `<div class="empty">No usage recorded yet — check out an item to start the log.</div>`; return; }
+  if(!sorted.length){ list.innerHTML = `<div class="empty">No usage recorded yet.</div>`; return; }
   list.innerHTML = sorted.map(c=>{
     const dur = c.returnTime ? hoursBetween(c.checkoutTime,c.returnTime).toFixed(1)+'h' : '—';
     return `
@@ -1172,7 +1182,7 @@ async function renderMaintenance(){
     if(!eqIdEl || !eqIdEl.value) return;
     const issueInput = document.getElementById('mtIssue');
     const issue = issueInput.value.trim();
-    if(containsProfanityOrNonsense(issue)){ showToast('Invalid description. Please provide a meaningful, professional description (at least 2 valid words).', 'error'); issueInput.focus(); return; }
+    if(containsProfanityOrNonsense(issue)){ showToast('Invalid description. Please provide a meaningful description.', 'error'); issueInput.focus(); return; }
     const eq = equipment.find(x=>x.id===eqIdEl.value);
     const severity = document.getElementById('mtSeverity').value;
     eq.condition = severity;
@@ -1198,7 +1208,7 @@ async function renderMaintenance(){
           ${esc(m.issue)}<br/>
           <span style="color:var(--ink-soft);">Reported by ${esc(m.reportedBy)} · ${fmtTime(m.timestamp)}</span>
           ${m.status==='Resolved' ? `<br/><span style="color:var(--ink-soft);">Resolved by ${esc(m.resolvedBy)} · ${fmtTime(m.resolvedAt)}</span>` : ''}
-          ${m.status==='Open' ? `<div style="margin-top:8px;"><button class="btn btn-sm" data-resolve="${m.id}">${profileRole==='incharge' || profileRole==='owner'?'Mark resolved':'Awaiting lab in-charge'}</button></div>` : ''}
+          ${m.status==='Open' ? `<div style="margin-top:8px;"><button class="btn btn-sm" data-resolve="${m.id}">${profileRole==='incharge'||profileRole==='owner'?'Mark resolved':'Awaiting lab in-charge'}</button></div>` : ''}
         </div>
       </div>
     `).join('');
@@ -1208,7 +1218,7 @@ async function renderMaintenance(){
       m.status='Resolved'; m.resolvedBy=profileName; m.resolvedAt=Date.now();
       const eq = equipment.find(x=>x.id===m.equipmentId);
       if(eq){ eq.condition='Good'; eq.availableQty = Math.min(eq.totalQty, eq.availableQty+1); }
-      await Promise.all([saveList(KEYS.maintenance, maintenance, true), saveList(KEYS.equipment, equipment, true)]);
+      await Promise.all([saveList(KEYS.maintenance,maintenance,true), saveList(KEYS.equipment,equipment,true)]);
       renderMaintenance();
     });
   };
@@ -1253,9 +1263,7 @@ async function renderScan(){
       <div class="panel">
         <h3>Manual lookup</h3>
         <p style="margin-top:-8px;">No camera handy? Type the tag printed on the equipment.</p>
-        <div class="form-row">
-          <div class="form-group"><label>Tag code</label><input id="manualTag" placeholder="e.g. LAB-EQ-0001" /></div>
-        </div>
+        <div class="form-row"><div class="form-group"><label>Tag code</label><input id="manualTag" placeholder="e.g. LAB-EQ-0001" /></div></div>
         <button class="btn btn-primary" id="manualLookup">Look up</button>
       </div>
     </div>
@@ -1268,61 +1276,52 @@ async function renderScan(){
     </style>
   `;
   document.getElementById('camStart').onclick = startCamera;
-  document.getElementById('camStop').onclick = ()=>{ stopCamera(); resetCameraUI(); const s = document.getElementById('camStatus'); if(s) s.textContent = 'Camera stopped.'; };
-  document.getElementById('manualLookup').onclick = ()=>{ const v = document.getElementById('manualTag').value.trim(); if(!v){ showToast('Type a tag code first.', 'warn'); return; } lookupAndShow(v); };
+  document.getElementById('camStop').onclick = ()=>{ stopCamera(); resetCameraUI(); const s=document.getElementById('camStatus'); if(s) s.textContent='Camera stopped.'; };
+  document.getElementById('manualLookup').onclick = ()=>{ const v=document.getElementById('manualTag').value.trim(); if(!v){ showToast('Type a tag code first.','warn'); return; } lookupAndShow(v); };
   document.getElementById('manualTag').addEventListener('keydown', e=>{ if(e.key==='Enter') document.getElementById('manualLookup').click(); });
 }
 
 function resetCameraUI(){
-  const video = document.getElementById('scanVideo');
-  const placeholder = document.getElementById('camPlaceholder');
-  const overlay = document.getElementById('scanOverlayBox');
-  const startBtn = document.getElementById('camStart');
-  if(video) video.style.display = 'none';
-  if(placeholder) placeholder.style.display = 'flex';
-  if(overlay) overlay.style.display = 'none';
-  if(startBtn) startBtn.disabled = false;
+  const video=document.getElementById('scanVideo'), placeholder=document.getElementById('camPlaceholder'), overlay=document.getElementById('scanOverlayBox'), startBtn=document.getElementById('camStart');
+  if(video) video.style.display='none';
+  if(placeholder) placeholder.style.display='flex';
+  if(overlay) overlay.style.display='none';
+  if(startBtn) startBtn.disabled=false;
 }
 
 async function startCamera(){
-  const statusEl = document.getElementById('camStatus');
-  const startBtn = document.getElementById('camStart');
-  if(!statusEl || !startBtn) return;
-  if(scanStream){ return; }
-  if(typeof jsQR === 'undefined'){ statusEl.textContent = 'QR decoding library failed to load — use manual lookup instead.'; return; }
-  if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){ statusEl.textContent = 'Camera API not available in this browser context — use manual lookup instead.'; return; }
-  if(location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1'){ statusEl.textContent = 'Camera requires HTTPS secure connection — use manual lookup instead.'; return; }
-  startBtn.disabled = true;
-  statusEl.textContent = 'Requesting camera access…';
-  try{ scanStream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ ideal:'environment' } } }); }
-  catch(e1){ try{ scanStream = await navigator.mediaDevices.getUserMedia({ video:true }); }catch(e2){ startBtn.disabled = false; statusEl.textContent = 'Camera permission denied or unavailable — use manual lookup below.'; return; } }
-  const video = document.getElementById('scanVideo');
-  const placeholder = document.getElementById('camPlaceholder');
-  const overlay = document.getElementById('scanOverlayBox');
-  const canvas = document.getElementById('scanCanvas');
-  if(!video || !canvas){ stopCamera(); return; }
-  video.srcObject = scanStream;
-  video.style.display = 'block';
-  placeholder.style.display = 'none';
-  if(overlay) overlay.style.display = 'block';
-  try{ await video.play(); }catch(e){ /* safe to ignore */ }
-  statusEl.textContent = 'Scanning inside target box…';
-  const ctx = canvas.getContext('2d', { willReadFrequently:true });
-  let sized = false;
-  const tick = ()=>{
+  const statusEl=document.getElementById('camStatus'), startBtn=document.getElementById('camStart');
+  if(!statusEl||!startBtn) return;
+  if(scanStream) return;
+  if(typeof jsQR==='undefined'){ statusEl.textContent='QR library failed to load — use manual lookup instead.'; return; }
+  if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){ statusEl.textContent='Camera API not available — use manual lookup instead.'; return; }
+  if(location.protocol!=='https:'&&location.hostname!=='localhost'&&location.hostname!=='127.0.0.1'){ statusEl.textContent='Camera requires HTTPS — use manual lookup instead.'; return; }
+  startBtn.disabled=true;
+  statusEl.textContent='Requesting camera access…';
+  try{ scanStream=await navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ ideal:'environment' } } }); }
+  catch(e1){ try{ scanStream=await navigator.mediaDevices.getUserMedia({ video:true }); }catch(e2){ startBtn.disabled=false; statusEl.textContent='Camera permission denied — use manual lookup below.'; return; } }
+  const video=document.getElementById('scanVideo'), placeholder=document.getElementById('camPlaceholder'), overlay=document.getElementById('scanOverlayBox'), canvas=document.getElementById('scanCanvas');
+  if(!video||!canvas){ stopCamera(); return; }
+  video.srcObject=scanStream; video.style.display='block'; placeholder.style.display='none';
+  if(overlay) overlay.style.display='block';
+  try{ await video.play(); }catch(e){}
+  statusEl.textContent='Scanning inside target box…';
+  const ctx=canvas.getContext('2d',{willReadFrequently:true});
+  let sized=false;
+  const tick=()=>{
     if(!scanStream) return;
     try{
-      if(video.readyState === video.HAVE_ENOUGH_DATA && video.videoWidth > 0 && video.videoHeight > 0){
-        if(!sized){ canvas.width = video.videoWidth; canvas.height = video.videoHeight; sized = true; }
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-        const code = jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: "attemptBoth" });
-        if(code && code.data){ statusEl.textContent = 'Match found: ' + code.data; stopCamera(); resetCameraUI(); lookupAndShow(code.data); return; }
+      if(video.readyState===video.HAVE_ENOUGH_DATA&&video.videoWidth>0&&video.videoHeight>0){
+        if(!sized){ canvas.width=video.videoWidth; canvas.height=video.videoHeight; sized=true; }
+        ctx.drawImage(video,0,0,canvas.width,canvas.height);
+        const imageData=ctx.getImageData(0,0,canvas.width,canvas.height);
+        const code=jsQR(imageData.data,imageData.width,imageData.height,{inversionAttempts:'attemptBoth'});
+        if(code&&code.data){ statusEl.textContent='Match found: '+code.data; stopCamera(); resetCameraUI(); lookupAndShow(code.data); return; }
       }
-    }catch(err){ console.error('QR scan frame error', err); }
-    scanRAF = requestAnimationFrame(tick);
+    }catch(err){ console.error('QR scan frame error',err); }
+    scanRAF=requestAnimationFrame(tick);
   };
-  scanRAF = requestAnimationFrame(tick);
+  scanRAF=requestAnimationFrame(tick);
 }
 
 async function lookupAndShow(tagOrId){
@@ -1346,10 +1345,7 @@ async function lookupAndShow(tagOrId){
       <div class="asset-tag" style="margin-bottom:16px;">
         <span class="tick-tr"></span><span class="tick-br"></span>
         <div class="tag-row">
-          <div>
-            <div class="tag-id">${eq.tag}</div>
-            <div class="tag-title" style="font-size:18px;">${esc(eq.name)}</div>
-          </div>
+          <div><div class="tag-id">${eq.tag}</div><div class="tag-title" style="font-size:18px;">${esc(eq.name)}</div></div>
           <div style="text-align:right;">
             <span class="badge ${condBadge}">${eq.condition}</span>
             <div class="qr-slot" id="scan-qr-${eq.id}" title="Click to enlarge QR code"></div>
@@ -1405,7 +1401,7 @@ async function renderUsers(){
       <div class="panel" style="margin-top: 24px; border-color: var(--rust);">
         <h3 style="color: var(--rust);">⚠️ Clear All Lab History Records</h3>
         <p style="font-size: 0.9rem; color: var(--ink-soft); margin-bottom: 14px;">
-          Wipe clean all historical checkouts, returns, and maintenance report records across the college. Equipment inventory will not be deleted.
+          Wipe clean all historical checkouts, returns, and maintenance report records. Equipment inventory will not be deleted.
         </p>
         <button class="btn" id="clearHistoryBtn" style="border-color: var(--rust); color: var(--rust);">Clear all history records</button>
       </div>
@@ -1415,7 +1411,7 @@ async function renderUsers(){
     document.getElementById('clearHistoryBtn').onclick = async ()=>{
       if(!confirm('Are you sure you want to clear all checkout and maintenance history? This cannot be undone.')) return;
       try{
-        await Promise.all([saveList(KEYS.checkouts, [], true), saveList(KEYS.maintenance, [], true)]);
+        await Promise.all([saveList(KEYS.checkouts,[],true), saveList(KEYS.maintenance,[],true)]);
         showToast('All lab history records cleared successfully.', 'ok');
       }catch(e){ showToast('Could not clear history.', 'error'); }
     };
@@ -1429,7 +1425,7 @@ async function renderUsers(){
   const remoteApprovals = await storageGet(KEYS.approvedUsersMap, true) || {};
   users.forEach(u => {
     if(u.role === 'owner' || u.role === 'incharge' ||
-       remoteApprovals[u.id] || remoteApprovals[u.username] || remoteApprovals[u.collegeEmail]) {
+       remoteApprovals[u.id] || remoteApprovals[u.username] || remoteApprovals[u.collegeEmail]){
       u.status = 'approved';
     }
   });
@@ -1445,9 +1441,7 @@ async function renderUsers(){
           <div>${esc(u.fullName)}<br/><span class="tag-id">${esc(u.collegeEmail || u.username)}</span></div>
           <div>${esc(u.department)}</div>
           <div class="mono">${esc(u.collegeCode)}</div>
-          <div>
-            <span class="badge ${u.status==='approved'?'badge-ok':'badge-warn'}">${u.status==='approved'?'Approved':'Pending'}</span>
-          </div>
+          <div><span class="badge ${u.status==='approved'?'badge-ok':'badge-warn'}">${u.status==='approved'?'Approved':'Pending'}</span></div>
           <div>
             ${u.role==='owner'
               ? `<span class="badge badge-rust">Owner</span>`
@@ -1472,7 +1466,7 @@ async function renderUsers(){
           body: JSON.stringify({ status: 'approved' })
         });
         if(!res.ok) throw new Error('Server rejected');
-      } catch(err) { console.warn('Server PATCH failed, using local map fallback', err); }
+      } catch(err){ console.warn('Server PATCH failed, using local fallback', err); }
       remoteApprovals[userId] = true;
       if(targetUser){
         if(targetUser.id) remoteApprovals[targetUser.id] = true;
@@ -1481,7 +1475,7 @@ async function renderUsers(){
       }
       await storageSet(KEYS.approvedUsersMap, remoteApprovals, true);
       if(targetUser) targetUser.status = 'approved';
-      if(targetUser && targetUser.id){ await sendPersonalNotification(targetUser.id, '✅ Account Approved', 'Your LabTrack account has been approved! You can now sign in successfully.'); }
+      if(targetUser && targetUser.id){ await sendPersonalNotification(targetUser.id, '✅ Account Approved', 'Your LabTrack account has been approved! You can now sign in.'); }
       showToast('Account approved successfully!', 'ok');
       draw();
     });
@@ -1495,14 +1489,14 @@ async function renderUsers(){
           method:'PATCH', headers:{'Content-Type':'application/json'},
           body: JSON.stringify({ role: newRole, status: 'approved' })
         });
-        showToast('Role updated and account status kept approved.', 'ok');
+        showToast('Role updated and account kept approved.', 'ok');
       }catch(e){ showToast('Role updated locally.', 'ok'); }
     });
     body.querySelectorAll('[data-delete]').forEach(b=> b.onclick = async ()=>{
       b.dataset.confirming = b.dataset.confirming === '1' ? '2' : '1';
       if(b.dataset.confirming === '1'){
         b.textContent = 'Confirm remove?';
-        setTimeout(()=>{ if(b && b.dataset) { b.dataset.confirming='0'; b.textContent='Remove'; } }, 4000);
+        setTimeout(()=>{ if(b && b.dataset){ b.dataset.confirming='0'; b.textContent='Remove'; } }, 4000);
         return;
       }
       try {
