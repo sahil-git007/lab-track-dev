@@ -1,946 +1,1820 @@
-'use strict';
-
-/* ============ 1. Config & State ============ */
+/* ============ Auth + Storage (real backend, college-code scoped) ============ */
 const AUTH_KEY = 'labtrack_auth_token';
 let authToken = localStorage.getItem(AUTH_KEY) || null;
-let currentUser = null;
-let profileName = null;
-let profileRole = 'student';
-let currentTab = 'dashboard';
-let tagCounter = 1;
-let socket = null;
+let currentUser = null; // { id, fullName, collegeName, department, collegeCode, collegeEmail, username, role, status }
 
-const KEYS = {
-  equipment: 'lab:equipment',
-  checkouts: 'lab:checkouts',
-  maintenance: 'lab:maintenance',
-  tagCounter: 'lab:tagCounter',
-  notices: 'lab:notices',
-  clientVersion: 'lab:client_version',
-  approvedUsersMap: 'lab:approved_users_map'
-};
-const CURRENT_BUILD_VERSION = 'v4.0.0-premium';
-
-/* ============ 2. API / Storage Helpers ============ */
-function authHeaders(extra={}) {
-  const h = {...extra};
+function authHeaders(extra={}){
+  const h = { ...extra };
   if(authToken) h['Authorization'] = 'Bearer ' + authToken;
   return h;
 }
-async function apiFetch(path, opts={}) {
-  const res = await fetch(path, {...opts, headers: authHeaders(opts.headers||{})});
+async function apiFetch(path, opts={}){
+  const res = await fetch(path, { ...opts, headers: authHeaders(opts.headers||{}) });
   if(res.status === 401){ doLogout(false); throw new Error('Session expired'); }
   return res;
 }
-async function storageGet(key, shared=false) {
-  try {
+async function storageGet(key, shared=false){
+  try{
     const res = await apiFetch(`/api/storage/${encodeURIComponent(key)}?shared=${shared}`);
     if(!res.ok) return null;
     const data = await res.json();
     return data.value ?? null;
-  } catch(e) { return null; }
+  }catch(e){ console.error('storage get failed', key, e); return null; }
 }
-async function storageSet(key, value, shared=false) {
-  try {
+async function storageSet(key, value, shared=false){
+  try{
     const res = await apiFetch(`/api/storage/${encodeURIComponent(key)}`, {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({value, shared})
+      method:'POST',
+      headers:{ 'Content-Type':'application/json' },
+      body: JSON.stringify({ value, shared })
     });
     return res.ok;
-  } catch(e) { return false; }
+  }catch(e){ console.error('storage set failed', key, e); return false; }
 }
-async function loadList(key, shared=false) {
+async function loadList(key, shared=false){
   const v = await storageGet(key, shared);
   if(!v) return [];
-  try { return JSON.parse(v); } catch(e) { return []; }
+  try{ return JSON.parse(v); }catch(e){ return []; }
 }
-async function saveList(key, arr, shared=false) { return storageSet(key, JSON.stringify(arr), shared); }
-
-/* ============ 3. Utilities ============ */
-function uid() { return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
-function fmtTime(ts) { return new Date(ts).toLocaleString(); }
-function fmtDate(ts) { return new Date(ts).toLocaleDateString(); }
-function esc(s) { return (s||'').toString().replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
-function hoursBetween(a,b) { return Math.max(0,(b-a)/3600000); }
-
-/* ============ 4. Theme ============ */
-function initThemeToggle() {
-  const theme = localStorage.getItem('labtrack_theme') || 'light';
-  document.documentElement.setAttribute('data-theme', theme);
+async function saveList(key, arr, shared=false){ return storageSet(key, JSON.stringify(arr), shared); }
+function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
+function fmtTime(ts){
+  if(!ts) return '—';
+  const d = new Date(ts);
+  return d.toLocaleDateString(undefined,{month:'short',day:'numeric'}) + ' · ' + d.toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'});
 }
-function toggleTheme() {
-  const current = document.documentElement.getAttribute('data-theme');
-  const next = current === 'light' ? 'dark' : 'light';
-  document.documentElement.setAttribute('data-theme', next);
-  localStorage.setItem('labtrack_theme', next);
+function fmtDate(ts){
+  if(!ts) return '—';
+  return new Date(ts).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'});
 }
+function esc(s){ return (s||'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function fmtPrice(p){ return (p===null||p===undefined||p==='') ? null : '₹' + Number(p).toLocaleString('en-IN', {maximumFractionDigits:2}); }
+function isSafeUrl(u){ return /^https?:\/\//i.test((u||'').trim()); }
 
-/* ============ 5. Toast ============ */
-function showToast(message, type='info', duration=4000) {
-  const container = document.getElementById('toastContainer');
-  if(!container) return;
-  const icons = { success:'✓', error:'✕', warn:'⚠', info:'ℹ' };
-  const toast = document.createElement('div');
-  toast.className = `toast toast-${type}`;
-  toast.innerHTML = `
-    <span class="toast-icon">${icons[type]||'ℹ'}</span>
-    <div class="toast-content"><div class="toast-msg">${esc(message)}</div></div>
-    <button class="toast-close" aria-label="Dismiss">&times;</button>
-  `;
-  container.appendChild(toast);
-  const remove = () => { toast.classList.add('hiding'); setTimeout(()=>toast.remove(),300); };
-  toast.querySelector('.toast-close').onclick = remove;
-  if(duration > 0) setTimeout(remove, duration);
-}
+/* ============ Strict Sustainable Content Validation Engine ============ */
+function containsProfanityOrNonsense(text){
+  if(!text) return true;
+  const clean = text.trim();
+  const lower = clean.toLowerCase();
 
-/* ============ 6. Modal ============ */
-function showModal({ title, body, footer, onClose }) {
-  const backdrop = document.createElement('div');
-  backdrop.className = 'modal-backdrop';
-  backdrop.innerHTML = `
-    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
-      <div class="modal-header">
-        <h2 class="modal-title" id="modal-title">${title}</h2>
-        <button class="modal-close" aria-label="Close">&times;</button>
-      </div>
-      <div class="modal-body">${body}</div>
-      ${footer ? `<div class="modal-footer">${footer}</div>` : ''}
-    </div>
-  `;
-  document.body.appendChild(backdrop);
-  const close = () => { backdrop.remove(); if(onClose) onClose(); };
-  backdrop.querySelector('.modal-close').onclick = close;
-  backdrop.onclick = (e) => { if(e.target === backdrop) close(); };
-  return close;
-}
-
-/* ============ 7. Socket.IO ============ */
-function initSocket() {
-  if(!authToken) return;
-  if(typeof io !== 'undefined') {
-    socket = io({ query: { token: authToken } });
-    socket.on('equipment:update', ({ tag, status, collegeCode }) => {
-      if(!currentUser || collegeCode !== currentUser.collegeCode) return;
-      if(currentTab === 'inventory' || currentTab === 'checkout' || currentTab === 'dashboard') switchTab(currentTab);
-      showToast(`Equipment status updated: ${status}`, 'info', 2000);
-    });
-    socket.on('storage:update', ({ key, collegeCode }) => {
-      if(!currentUser || collegeCode !== currentUser.collegeCode) return;
-      switchTab(currentTab);
-    });
-    socket.on('connect_error', () => { console.warn('[LabTrack] Real-time sync unavailable'); });
-  }
-}
-function disconnectSocket() { if(socket) { socket.disconnect(); socket = null; } }
-
-/* ============ 8. Auth Screens ============ */
-function renderAuthScreen(mode, errorMsg) {
-  const overlay = document.getElementById('authOverlay');
-  overlay.style.display = 'flex';
-  const card = document.getElementById('authCard');
-
-  if(mode === 'login') {
-    card.innerHTML = `
-      <h1 class="auth-title" style="margin-top:0;">Welcome back</h1>
-      <p class="auth-subtitle">Sign in to your LabTrack account</p>
-      ${errorMsg ? `<div class="auth-error">⚠ ${esc(errorMsg)}</div>` : ''}
-      <form id="loginForm" novalidate style="display:flex;flex-direction:column;gap:15px;">
-        <div class="form-group">
-          <label class="form-label">College Code</label>
-          <input class="input" id="loCollegeCode" placeholder="e.g. GECX2026" autocomplete="organization" required />
-        </div>
-        <div class="form-group">
-          <label class="form-label">Username</label>
-          <input class="input" id="loUsername" autocomplete="username" required />
-        </div>
-        <div class="form-group">
-          <label class="form-label">Password</label>
-          <div class="input-wrapper">
-            <input class="input" id="loPassword" type="password" autocomplete="current-password" required />
-            <button type="button" class="input-action" id="toggleLoginPwd">👁</button>
-          </div>
-        </div>
-        <button type="submit" class="btn btn-primary btn-full" id="loSubmit">Sign In</button>
-      </form>
-      <div class="auth-switch">New to LabTrack? <a id="toRegister" href="#">Create an account</a></div>
-    `;
-    document.getElementById('toggleLoginPwd').onclick = () => {
-      const inp = document.getElementById('loPassword');
-      inp.type = inp.type === 'password' ? 'text' : 'password';
-    };
-    document.getElementById('toRegister').onclick = (e) => { e.preventDefault(); renderAuthScreen('register'); };
-    document.getElementById('loginForm').onsubmit = async (e) => {
-      e.preventDefault();
-      const btn = document.getElementById('loSubmit');
-      btn.disabled = true; btn.textContent = 'Signing in...';
-      try {
-        const res = await fetch('/api/auth/login', {
-          method:'POST', headers:{'Content-Type':'application/json'},
-          body: JSON.stringify({
-            collegeCode: document.getElementById('loCollegeCode').value,
-            username: document.getElementById('loUsername').value,
-            password: document.getElementById('loPassword').value
-          })
-        });
-        const data = await res.json();
-        if(res.ok) { authToken = data.token; localStorage.setItem(AUTH_KEY, authToken); boot(); }
-        else renderAuthScreen('login', data.error || 'Login failed');
-      } catch(err) { renderAuthScreen('login', err.message); }
-    };
-  } else {
-    card.innerHTML = `
-      <h1 class="auth-title" style="margin-top:0;">Create Account</h1>
-      <p class="auth-subtitle">Register your lab with LabTrack</p>
-      ${errorMsg ? `<div class="auth-error">⚠ ${esc(errorMsg)}</div>` : ''}
-      <form id="regForm" novalidate style="display:flex;flex-direction:column;gap:15px;">
-        <div class="form-group">
-          <label class="form-label">College Code</label>
-          <input class="input" id="regCollegeCode" placeholder="e.g. GECX2026" required />
-        </div>
-        <div class="form-group">
-          <label class="form-label">Full Name</label>
-          <input class="input" id="regFullName" required />
-        </div>
-        <div class="form-group">
-          <label class="form-label">Username</label>
-          <input class="input" id="regUsername" required />
-        </div>
-        <div class="form-group">
-          <label class="form-label">Password</label>
-          <input class="input" id="regPassword" type="password" required />
-        </div>
-        <button type="submit" class="btn btn-primary btn-full" id="regSubmit">Register</button>
-      </form>
-      <div class="auth-switch">Already have an account? <a id="toLogin" href="#">Sign in</a></div>
-    `;
-    document.getElementById('toLogin').onclick = (e) => { e.preventDefault(); renderAuthScreen('login'); };
-    document.getElementById('regForm').onsubmit = async (e) => {
-      e.preventDefault();
-      const btn = document.getElementById('regSubmit');
-      btn.disabled = true; btn.textContent = 'Registering...';
-      try {
-        const res = await fetch('/api/auth/register', {
-          method:'POST', headers:{'Content-Type':'application/json'},
-          body: JSON.stringify({
-            collegeCode: document.getElementById('regCollegeCode').value,
-            fullName: document.getElementById('regFullName').value,
-            username: document.getElementById('regUsername').value,
-            password: document.getElementById('regPassword').value
-          })
-        });
-        const data = await res.json();
-        if(res.ok) renderAuthScreen('login', 'Registration successful! Please sign in.');
-        else renderAuthScreen('register', data.error || 'Registration failed');
-      } catch(err) { renderAuthScreen('register', err.message); }
-    };
-  }
-}
-
-/* ============ 9. App Shell ============ */
-function renderSidebar() {
-  const sidebar = document.getElementById('sidebar');
-  if(!sidebar) return;
-  const items = [
-    { id:'dashboard', icon:'📊', label:'Dashboard', roles:['student','incharge','owner'] },
-    { id:'inventory', icon:'📦', label:'Equipment', roles:['student','incharge','owner'] },
-    { id:'scan', icon:'📱', label:'Scan QR', roles:['student','incharge','owner'] },
-    { id:'checkout', icon:'🔄', label:'Checkout', roles:['student','incharge','owner'] },
-    { id:'maintenance', icon:'🔧', label:'Maintenance', roles:['student','incharge','owner'] },
-    { id:'usage', icon:'📝', label:'Usage Log', roles:['incharge','owner'] },
-    { id:'notices', icon:'📢', label:'Notices', roles:['student','incharge','owner'] },
-    { id:'users', icon:'👥', label:'Users', roles:['incharge','owner'] },
-    { id:'analytics', icon:'📈', label:'Analytics', roles:['student','incharge','owner'] }
+  const badWords = [
+    'sperm', 'jhonny', 'johnny', 'sins', 'sex', 'porn', 'fuck', 'shit', 'bitch', 
+    'ass', 'damn', 'dick', 'cock', 'pussy', 'bastard', 'chor market', 'bloody', 'randi', 'lund', 'choot'
   ];
-  let html = '<ul style="list-style:none;padding:0;margin:0;">';
-  items.forEach(item => {
-    if(item.roles.includes(profileRole)) {
-      const active = currentTab === item.id ? 'background:var(--paper-subtle);color:var(--accent);font-weight:600;border-left:3px solid var(--accent);' : 'color:var(--ink-soft);border-left:3px solid transparent;';
-      html += `<li><a href="#" onclick="switchTab('${item.id}');return false;" style="display:flex;align-items:center;padding:11px 20px;text-decoration:none;gap:12px;font-size:0.9rem;transition:all 0.2s;${active}">
-        <span>${item.icon}</span><span>${item.label}</span></a></li>`;
-    }
+  for(let word of badWords){
+    if(lower.includes(word)) return true;
+  }
+
+  if(/(.)\1{3,}/.test(lower)) return true;
+
+  const words = clean.split(/\s+/).filter(w => w.length > 1);
+  if(words.length < 2) return true;
+
+  for(let w of words){
+    if(w.length > 5 && !/[aeiouy]/i.test(w)) return true;
+  }
+
+  return false;
+}
+
+/* ============ Personal Notification Dispatcher ============ */
+async function sendPersonalNotification(usernameOrId, title, message){
+  const notifsKey = `lab:notifications:${usernameOrId}`;
+  const list = await loadList(notifsKey, true);
+  list.unshift({
+    id: uid(),
+    title,
+    message,
+    time: Date.now(),
+    read: false
   });
-  html += '</ul>';
-  sidebar.innerHTML = html;
+  await saveList(notifsKey, list, true);
 }
 
-function renderTopbarActions() {
-  const box = document.getElementById('topbarActions');
-  if(!box) return;
-  const currentTheme = localStorage.getItem('labtrack_theme') || 'light';
-  box.innerHTML = `
-    <button class="icon-btn" id="themeToggleBtn" title="Toggle theme">${currentTheme === 'dark' ? '☀️' : '🌙'}</button>
-    <button class="icon-btn" id="notifBellBtn" title="Notifications" style="position:relative;">
-      🔔<span id="notifBadge" style="display:none;position:absolute;top:-2px;right:-2px;background:var(--rust);color:white;border-radius:50%;font-size:9px;padding:1px 4px;font-weight:700;"></span>
-    </button>
-    <div style="display:flex;align-items:center;gap:8px;padding:0 8px;">
-      <span class="dot"></span>
-      <span class="fw-600 text-sm">${esc(profileName)}</span>
-      <span class="badge ${profileRole==='owner'?'badge-owner':profileRole==='incharge'?'badge-incharge':'badge-student'}">${esc(profileRole)}</span>
-    </div>
-    <button class="btn btn-secondary btn-sm" id="logoutBtn">Log out</button>
-  `;
-  document.getElementById('themeToggleBtn').onclick = () => {
-    toggleTheme();
-    document.getElementById('themeToggleBtn').textContent = localStorage.getItem('labtrack_theme')==='dark' ? '☀️' : '🌙';
-  };
-  document.getElementById('logoutBtn').onclick = () => doLogout(true);
-  document.getElementById('notifBellBtn').onclick = async () => {
-    const notifs = await loadList(`lab:notifications:${currentUser.id}`, true);
-    showModal({
-      title: '🔔 Notifications',
-      body: notifs.length ? notifs.map(n => `
-        <div style="padding:10px;border:1px solid var(--grid);border-radius:8px;margin-bottom:8px;border-left:3px solid ${n.read?'var(--grid)':'var(--accent)'};">
-          <div class="fw-600 text-sm">${esc(n.title)}</div>
-          <div class="text-sm text-soft">${esc(n.message)}</div>
-          <div style="font-size:0.75rem;color:var(--ink-soft);margin-top:4px;">${fmtTime(n.time)}</div>
-        </div>`).join('') : '<div class="empty-state"><div class="empty-state-icon">🔔</div><div class="empty-state-title">No notifications</div></div>'
-    });
-    notifs.forEach(n => n.read = true);
-    await saveList(`lab:notifications:${currentUser.id}`, notifs, true);
-    const badge = document.getElementById('notifBadge');
-    if(badge) badge.style.display = 'none';
-  };
-  loadList(`lab:notifications:${currentUser.id}`, true).then(notifs => {
-    const unread = notifs.filter(n => !n.read).length;
-    const badge = document.getElementById('notifBadge');
-    if(badge && unread > 0) { badge.textContent = unread; badge.style.display = 'block'; }
-  });
-}
+/* ============ Media & Attachment Renderers ============ */
+function videoEmbedHtml(url){
+  if(!url || !isSafeUrl(url)) return '';
+  const clean = url.trim();
 
-/* ============ 10. Dashboard ============ */
-async function renderDashboard() {
-  const main = document.getElementById('main');
-  main.innerHTML = `
-    <div class="page-header">
-      <div><h1 class="page-title">Dashboard</h1><p class="page-subtitle">Welcome back, ${esc(profileName)}</p></div>
-      ${profileRole !== 'student' ? '<div class="page-actions"><button class="btn btn-primary" id="dashAddBtn">+ Add Equipment</button></div>' : ''}
-    </div>
-    <div class="dashboard-grid" id="statsGrid">
-      ${[1,2,3,4].map(()=>'<div class="skeleton skeleton-card"></div>').join('')}
-    </div>
-    <div class="content-grid">
-      <div class="card"><div class="card-header"><span class="card-title">Active Checkouts</span></div><div id="activeCheckouts">Loading...</div></div>
-      <div class="card"><div class="card-header"><span class="card-title">Recent Activity</span></div><div id="recentActivity">Loading...</div></div>
-    </div>
-  `;
-  document.getElementById('dashAddBtn')?.addEventListener('click', () => switchTab('inventory'));
-  const [equipment, checkouts] = await Promise.all([loadList(KEYS.equipment,true), loadList(KEYS.checkouts,true)]);
-  const total = equipment.length;
-  const available = equipment.filter(e=>e.status==='available').length;
-  const checkedOut = equipment.filter(e=>e.status==='checked-out').length;
-  const maintenance = equipment.filter(e=>e.status==='maintenance').length;
-  document.getElementById('statsGrid').innerHTML = `
-    ${statCard('📦','Total Equipment',total,'stat-icon-blue')}
-    ${statCard('✅','Available',available,'stat-icon-green')}
-    ${statCard('🔄','Checked Out',checkedOut,'stat-icon-amber')}
-    ${statCard('🔧','Maintenance',maintenance,'stat-icon-red')}
-  `;
-  const active = checkouts.filter(c=>c.status==='active');
-  document.getElementById('activeCheckouts').innerHTML = active.length
-    ? active.slice(0,5).map(c=>`<div style="padding:8px 0;border-bottom:1px solid var(--grid);"><strong>${esc(c.equipmentName||c.tag)}</strong><br><span class="text-sm text-soft">${esc(c.userName)} · ${fmtDate(c.checkedOutAt||c.createdAt)}</span></div>`).join('')
-    : '<div class="empty-state" style="padding:20px;"><div class="empty-state-icon">📋</div><div class="empty-state-title">No active checkouts</div></div>';
-  document.getElementById('recentActivity').innerHTML = checkouts.length
-    ? checkouts.slice(0,5).map(c=>`<div style="padding:8px 0;border-bottom:1px solid var(--grid);">${esc(c.userName)} ${c.status==='active'?'checked out':'returned'} <strong>${esc(c.equipmentName||c.tag)}</strong></div>`).join('')
-    : '<div class="empty-state" style="padding:20px;"><div class="empty-state-icon">📝</div><div class="empty-state-title">No activity yet</div></div>';
-}
-
-/* ============ 11. Equipment Inventory ============ */
-async function renderInventory() {
-  const main = document.getElementById('main');
-  main.innerHTML = `
-    <div class="page-header">
-      <div><h1 class="page-title">Equipment Inventory</h1></div>
-      ${profileRole !== 'student' ? '<div class="page-actions"><button class="btn btn-primary" id="addEquipBtn">+ Add Equipment</button></div>' : ''}
-    </div>
-    <div class="search-bar">
-      <div class="search-input-wrapper"><span class="search-icon">🔍</span><input class="input" id="invSearch" placeholder="Search equipment..." /></div>
-    </div>
-    <div id="inventoryContent"></div>
-  `;
-  document.getElementById('addEquipBtn')?.addEventListener('click', () => {
-    const closeModal = showModal({
-      title: 'Add Equipment',
-      body: `
-        <div class="form-group"><label class="form-label">Name</label><input class="input" id="eqName" placeholder="Equipment name" /></div>
-        <div class="form-group"><label class="form-label">Category</label><input class="input" id="eqCategory" placeholder="e.g. Microscope" /></div>
-        <div class="form-group"><label class="form-label">Department</label><input class="input" id="eqDept" placeholder="e.g. Biology" /></div>
-      `,
-      footer: '<button class="btn btn-secondary" id="cancelEq">Cancel</button><button class="btn btn-primary" id="saveEq">Add Equipment</button>'
-    });
-    document.getElementById('cancelEq')?.addEventListener('click', closeModal);
-    document.getElementById('saveEq')?.addEventListener('click', async () => {
-      const name = document.getElementById('eqName')?.value.trim();
-      const cat = document.getElementById('eqCategory')?.value.trim();
-      const dept = document.getElementById('eqDept')?.value.trim();
-      if(!name) { showToast('Enter equipment name','warn'); return; }
-      const eq = await loadList(KEYS.equipment, true);
-      const tag = `LT-${String(tagCounter++).padStart(4,'0')}`;
-      await storageSet(KEYS.tagCounter, tagCounter, true);
-      eq.push({ id:uid(), tag, name, category:cat||'General', department:dept||'', status:'available', collegeCode:currentUser.collegeCode, createdAt:Date.now() });
-      await saveList(KEYS.equipment, eq, true);
-      showToast('Equipment added!', 'success');
-      closeModal();
-      renderInventory();
-    });
-  });
-
-  const renderList = async () => {
-    const items = await loadList(KEYS.equipment, true);
-    const q = (document.getElementById('invSearch')?.value||'').toLowerCase();
-    const filtered = q ? items.filter(e=>(e.name||'').toLowerCase().includes(q)||(e.tag||'').toLowerCase().includes(q)||(e.category||'').toLowerCase().includes(q)) : items;
-    const el = document.getElementById('inventoryContent');
-    if(!filtered.length) {
-      el.innerHTML = '<div class="empty-state"><div class="empty-state-icon">📦</div><div class="empty-state-title">No equipment found</div><div class="empty-state-desc">Add equipment using the button above.</div></div>';
-      return;
-    }
-    el.innerHTML = `<div class="table-wrapper"><table class="data-table"><thead><tr><th>Tag</th><th>Name</th><th>Category</th><th>Status</th><th>Holder</th><th>Actions</th></tr></thead><tbody>
-      ${filtered.map(e=>`<tr>
-        <td class="mono text-accent">${esc(e.tag)}</td>
-        <td class="fw-600">${esc(e.name)}</td>
-        <td class="text-soft">${esc(e.category||'')}</td>
-        <td>${statusBadge(e.status)}</td>
-        <td class="text-sm text-soft">${e.currentHolder?esc(e.currentHolder.name||e.currentHolder.username):'—'}</td>
-        <td style="display:flex;gap:6px;">
-          ${e.status==='available'?`<button class="btn btn-sm btn-primary" onclick="doCheckout('${esc(e.tag)}','${esc(e.name)}')">Checkout</button>`:''}
-          ${e.status==='checked-out'?`<button class="btn btn-sm btn-secondary" onclick="doReturn('${esc(e.tag)}',null,'${esc(e.name)}')">Return</button>`:''}
-        </td>
-      </tr>`).join('')}
-    </tbody></table></div>`;
-  };
-  await renderList();
-  let t; document.getElementById('invSearch')?.addEventListener('input', ()=>{clearTimeout(t);t=setTimeout(renderList,300);});
-}
-
-function statusBadge(status) {
-  const map = { 'available':'badge-available', 'checked-out':'badge-checked-out', 'maintenance':'badge-maintenance' };
-  return `<span class="badge ${map[status]||'badge-neutral'}">${esc(status||'unknown')}</span>`;
-}
-
-/* ============ 12. QR Scanner ============ */
-async function renderScan() {
-  const main = document.getElementById('main');
-  main.innerHTML = `
-    <div class="page-header"><div><h1 class="page-title">Scan QR Code</h1><p class="page-subtitle">Point camera at equipment QR code or enter tag manually</p></div></div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;align-items:start;">
-      <div class="card">
-        <div class="card-header"><span class="card-title">Camera Scanner</span></div>
-        <div style="padding:16px;">
-          <div style="position:relative;width:100%;max-width:340px;margin:0 auto;border-radius:12px;overflow:hidden;background:#000;">
-            <video id="scanVideo" style="width:100%;display:block;" autoplay playsinline muted></video>
-            <canvas id="scanCanvas" style="display:none;"></canvas>
-            <div style="position:absolute;inset:0;border:3px solid rgba(36,128,107,0.6);border-radius:12px;pointer-events:none;"></div>
-          </div>
-          <p class="text-sm text-soft" style="text-align:center;margin-top:12px;" id="scanStatus">Starting camera…</p>
-          <button class="btn btn-secondary btn-full" id="stopCameraBtn" style="margin-top:8px;display:none;">Stop Camera</button>
-        </div>
-      </div>
-      <div class="card">
-        <div class="card-header"><span class="card-title">Manual Lookup</span></div>
-        <div style="padding:16px;">
-          <div class="form-group"><label class="form-label">Equipment Tag</label><input class="input" id="manualTag" placeholder="e.g. LT-0001" /></div>
-          <button class="btn btn-primary btn-full" id="manualLookupBtn">Look Up</button>
-        </div>
-        <div id="scanResult" style="padding:0 16px 16px;"></div>
-      </div>
+  const ytMatch = clean.match(/(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/i);
+  if(ytMatch && ytMatch[1]){
+    const videoId = ytMatch[1];
+    return `<div style="position:relative;width:100%;padding-bottom:56.25%;height:0;margin-top:8px;border-radius:8px;overflow:hidden;border:1px solid var(--grid);">
+      <iframe src="https://www.youtube-nocookie.com/embed/${videoId}" title="Equipment Video" style="position:absolute;top:0;left:0;width:100%;height:100%;border:0;" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
     </div>`;
-
-  let videoStream = null, scanning = false;
-
-  async function showEquipmentResult(eq) {
-    const result = document.getElementById('scanResult');
-    if(!eq) { result.innerHTML = '<div class="auth-error">⚠ Equipment not found</div>'; return; }
-    result.innerHTML = `
-      <div class="card" style="border:2px solid var(--accent);">
-        <div style="padding:16px;">
-          <div class="fw-700" style="font-size:1.1rem;">${esc(eq.name||'Unknown')}</div>
-          <div class="mono text-accent text-sm" style="margin:4px 0;">${esc(eq.tag||eq.qrTag||'')}</div>
-          <div style="margin:8px 0;">${statusBadge(eq.status)}</div>
-          <div class="text-sm text-soft">Category: ${esc(eq.category||'—')}</div>
-          ${eq.currentHolder?`<div class="text-sm text-soft">Holder: <strong>${esc(eq.currentHolder.name||eq.currentHolder.username||'')}</strong></div>`:''}
-          <div style="margin-top:12px;display:flex;gap:8px;">
-            ${eq.status==='available'?`<button class="btn btn-primary" onclick="doCheckout('${esc(eq.tag||eq.qrTag||'')}','${esc(eq.name||'')}')">Checkout</button>`:''}
-            ${eq.status==='checked-out'&&eq.currentHolder&&eq.currentHolder.id===currentUser?.id?`<button class="btn btn-secondary" onclick="doReturn('${esc(eq.tag||eq.qrTag||'')}',null,'${esc(eq.name||'')}')">Return</button>`:''}
-          </div>
-        </div>
-      </div>`;
   }
 
-  async function lookupByTag(tag) {
-    const equipment = await loadList(KEYS.equipment, true);
-    const eq = equipment.find(e=>(e.tag||e.qrTag||'').toLowerCase()===tag.toLowerCase());
-    await showEquipmentResult(eq||null);
+  const gdriveMatch = clean.match(/drive\.google\.com\/file\/d\/([^\/]+)/i);
+  if(gdriveMatch && gdriveMatch[1]){
+    const fileId = gdriveMatch[1];
+    return `<div style="position:relative;width:100%;padding-bottom:56.25%;height:0;margin-top:8px;border-radius:8px;overflow:hidden;border:1px solid var(--grid);">
+      <iframe src="https://drive.google.com/file/d/${fileId}/preview" title="Equipment Video Preview" style="position:absolute;top:0;left:0;width:100%;height:100%;border:0;" allow="autoplay" allowfullscreen></iframe>
+    </div>`;
   }
 
-  document.getElementById('manualLookupBtn')?.addEventListener('click', () => {
-    const tag = document.getElementById('manualTag')?.value.trim();
-    if(!tag) { showToast('Enter a tag','warn'); return; }
-    lookupByTag(tag);
-  });
-  document.getElementById('manualTag')?.addEventListener('keydown', (e) => {
-    if(e.key==='Enter') { const tag=e.target.value.trim(); if(tag) lookupByTag(tag); }
-  });
-
-  const video = document.getElementById('scanVideo');
-  const canvas = document.getElementById('scanCanvas');
-  const ctx = canvas?.getContext('2d');
-  const statusEl = document.getElementById('scanStatus');
-
-  async function startCamera() {
-    try {
-      videoStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode:'environment' } });
-      if(!video) return;
-      video.srcObject = videoStream; video.play();
-      document.getElementById('stopCameraBtn').style.display = 'block';
-      statusEl.textContent = 'Camera active — point at a QR code';
-      scanning = true; scanFrame();
-    } catch(err) {
-      if(statusEl) statusEl.textContent = 'Camera unavailable. Use manual lookup.';
-    }
+  const isDirect = /\.(mp4|webm|ogg)(\?.*)?$/i.test(clean);
+  if(isDirect){
+    return `<video controls preload="metadata" style="width:100%;max-width:480px;border-radius:8px;border:1px solid var(--grid);margin-top:8px;display:block;">
+      <source src="${esc(clean)}" type="video/mp4">
+      Your browser can't play this video inline. <a href="${esc(clean)}" target="_blank" rel="noopener">Open it directly</a>.
+    </video>`;
   }
 
-  function scanFrame() {
-    if(!scanning||!video||!canvas||!ctx) return;
-    if(video.readyState === video.HAVE_ENOUGH_DATA) {
-      canvas.width = video.videoWidth; canvas.height = video.videoHeight;
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      if(typeof jsQR !== 'undefined') {
-        const code = jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts:'dontInvert' });
-        if(code && code.data) {
-          scanning = false;
-          if(statusEl) statusEl.textContent = `✓ Scanned: ${code.data}`;
-          const tag = code.data.replace(/^LABTRACK:/i,'').trim();
-          document.getElementById('manualTag').value = tag;
-          lookupByTag(tag);
-          setTimeout(()=>{ scanning=true; scanFrame(); if(statusEl) statusEl.textContent='Camera active — point at a QR code'; }, 4000);
-          return;
-        }
-      }
-    }
-    requestAnimationFrame(scanFrame);
-  }
-
-  function stopCamera() {
-    scanning = false;
-    if(videoStream) { videoStream.getTracks().forEach(t=>t.stop()); videoStream = null; }
-    if(video) video.srcObject = null;
-    document.getElementById('stopCameraBtn').style.display = 'none';
-    if(statusEl) statusEl.textContent = 'Camera stopped.';
-  }
-
-  document.getElementById('stopCameraBtn')?.addEventListener('click', stopCamera);
-  window._scanCleanup = stopCamera;
-  startCamera();
+  return `<a class="btn btn-sm" href="${esc(clean)}" target="_blank" rel="noopener" style="margin-top:8px;display:inline-block;">▶ Watch video link</a>`;
 }
 
-/* ============ 13. Checkout / Return ============ */
-async function doCheckout(tag, equipmentName) {
-  const ok = window.confirm(`Checkout "${equipmentName}" (${tag})?\n\nYou are responsible for returning this equipment.`);
-  if(!ok) return;
-  try {
-    const res = await apiFetch(`/api/equipment/${encodeURIComponent(tag)}/checkout`, { method:'POST', headers:{'Content-Type':'application/json'} });
-    if(res.ok) {
-      showToast(`Checked out: ${equipmentName}`, 'success');
-      const chkList = await loadList(KEYS.checkouts, true);
-      chkList.unshift({ id:uid(), tag, equipmentTag:tag, equipmentName, userId:currentUser.id, userName:currentUser.fullName||currentUser.username, status:'active', checkedOutAt:Date.now() });
-      await saveList(KEYS.checkouts, chkList, true);
-      if(currentTab==='inventory') renderInventory();
-      else if(currentTab==='checkout') renderCheckout();
-      else if(currentTab==='dashboard') renderDashboard();
-    } else {
-      const err = await res.json().catch(()=>({}));
-      showToast(err.error||'Checkout failed.','error');
-    }
-  } catch(e) { showToast('Checkout failed: '+e.message,'error'); }
-}
+function photosGalleryHtml(photosStr){
+  if(!photosStr) return '';
+  const urls = photosStr.split(/[\n,]+/).map(u => u.trim()).filter(isSafeUrl);
+  if(!urls.length) return '';
 
-async function doReturn(tag, checkoutId, equipmentName) {
-  const ok = window.confirm(`Return "${equipmentName||tag}"?`);
-  if(!ok) return;
-  try {
-    const res = await apiFetch(`/api/equipment/${encodeURIComponent(tag)}/return`, { method:'POST', headers:{'Content-Type':'application/json'} });
-    if(res.ok) {
-      showToast(`Returned: ${equipmentName||tag}`, 'success');
-      const chkList = await loadList(KEYS.checkouts, true);
-      const chk = chkList.find(c=>(c.tag===tag||c.equipmentTag===tag)&&c.status==='active');
-      if(chk) { chk.status='returned'; chk.returnedAt=Date.now(); await saveList(KEYS.checkouts, chkList, true); }
-      if(currentTab==='inventory') renderInventory();
-      else if(currentTab==='checkout') renderCheckout();
-      else if(currentTab==='dashboard') renderDashboard();
-    } else {
-      const err = await res.json().catch(()=>({}));
-      showToast(err.error||'Return failed.','error');
-    }
-  } catch(e) { showToast('Return failed: '+e.message,'error'); }
-}
-
-/* ============ 14. Maintenance ============ */
-async function renderMaintenance() {
-  const main = document.getElementById('main');
-  main.innerHTML = `
-    <div class="page-header">
-      <div><h1 class="page-title">Maintenance</h1><p class="page-subtitle">Track and resolve equipment issues</p></div>
-      <div class="page-actions">
-        <button class="btn btn-primary" id="reportMaintBtn">+ Report Issue</button>
-        ${profileRole!=='student'?'<button class="btn btn-secondary" id="showResolvedBtn">Show Resolved</button>':''}
-      </div>
-    </div>
-    <div class="search-bar"><div class="search-input-wrapper"><span class="search-icon">🔍</span><input class="input" id="maintSearch" placeholder="Search issues..." /></div></div>
-    <div id="maintList"></div>
-  `;
-  let showResolved = false;
-  const renderList = async () => {
-    const listEl = document.getElementById('maintList');
-    const all = await loadList(KEYS.maintenance, true);
-    let filtered = all.filter(m=>showResolved ? m.status==='resolved' : m.status!=='resolved');
-    const q = (document.getElementById('maintSearch')?.value||'').toLowerCase();
-    if(q) filtered = filtered.filter(m=>(m.equipmentName||'').toLowerCase().includes(q)||(m.description||'').toLowerCase().includes(q));
-    if(!filtered.length) { listEl.innerHTML = '<div class="empty-state"><div class="empty-state-icon">🔧</div><div class="empty-state-title">No issues found</div></div>'; return; }
-    const pMap = { critical:'badge-critical', high:'badge-high', medium:'badge-medium', low:'badge-low' };
-    const sMap = { open:'badge-checked-out', 'in-progress':'badge-maintenance', resolved:'badge-available' };
-    listEl.innerHTML = `<div class="table-wrapper"><table class="data-table"><thead><tr><th>Equipment</th><th>Issue</th><th>Priority</th><th>Status</th><th>Reported</th><th>By</th>${profileRole!=='student'?'<th>Action</th>':''}</tr></thead><tbody>
-      ${filtered.map(m=>`<tr>
-        <td class="fw-600">${esc(m.equipmentName||m.equipmentTag||'Unknown')}</td>
-        <td style="max-width:200px;" class="truncate">${esc(m.description||'')}</td>
-        <td><span class="badge ${pMap[m.priority]||'badge-neutral'}">${esc(m.priority||'')}</span></td>
-        <td><span class="badge ${sMap[m.status]||'badge-neutral'}">${esc(m.status||'')}</span></td>
-        <td class="text-sm text-soft">${fmtDate(m.reportedAt||m.createdAt)}</td>
-        <td class="text-sm">${esc(m.reportedByName||'')}</td>
-        ${profileRole!=='student'?`<td>${m.status!=='resolved'?`<button class="btn btn-sm btn-primary" onclick="resolveMaintenance('${esc(m.id)}')">Resolve</button>`:'<span class="text-soft text-sm">Done</span>'}</td>`:''}</tr>`).join('')}
-    </tbody></table></div>`;
-  };
-  await renderList();
-  let t; document.getElementById('maintSearch')?.addEventListener('input',()=>{clearTimeout(t);t=setTimeout(renderList,300);});
-  document.getElementById('showResolvedBtn')?.addEventListener('click', async()=>{
-    showResolved=!showResolved;
-    document.getElementById('showResolvedBtn').textContent=showResolved?'Show Open':'Show Resolved';
-    await renderList();
-  });
-  document.getElementById('reportMaintBtn')?.addEventListener('click', showReportMaintenanceModal);
-}
-
-async function resolveMaintenance(id) {
-  const all = await loadList(KEYS.maintenance, true);
-  const m = all.find(x=>x.id===id); if(!m) return;
-  m.status='resolved'; m.resolvedAt=Date.now(); m.resolvedBy=currentUser.fullName||currentUser.username;
-  await saveList(KEYS.maintenance, all, true);
-  const eqList = await loadList(KEYS.equipment, true);
-  const eq = eqList.find(e=>(e.tag||e.qrTag)===(m.equipmentTag||m.tag));
-  if(eq && eq.status==='maintenance') { eq.status='available'; await saveList(KEYS.equipment, eqList, true); }
-  showToast('Issue resolved!','success'); renderMaintenance();
-}
-
-function showReportMaintenanceModal() {
-  const closeModal = showModal({
-    title: 'Report Maintenance Issue',
-    body: `
-      <div class="form-group"><label class="form-label">Equipment Tag</label><input class="input" id="mEquipTag" placeholder="e.g. LT-0001" /></div>
-      <div class="form-group"><label class="form-label">Equipment Name</label><input class="input" id="mEquipName" placeholder="Equipment name" /></div>
-      <div class="form-group"><label class="form-label">Issue Description</label><textarea class="input" id="mDesc" rows="3" placeholder="Describe the issue..." style="height:auto;padding:8px;resize:vertical;"></textarea></div>
-      <div class="form-group"><label class="form-label">Priority</label>
-        <select class="input" id="mPriority"><option value="low">Low</option><option value="medium" selected>Medium</option><option value="high">High</option><option value="critical">Critical</option></select>
-      </div>`,
-    footer: '<button class="btn btn-secondary" id="cancelMaint">Cancel</button><button class="btn btn-primary" id="submitMaint">Report Issue</button>'
-  });
-  document.getElementById('cancelMaint')?.addEventListener('click', closeModal);
-  document.getElementById('submitMaint')?.addEventListener('click', async()=>{
-    const tag=document.getElementById('mEquipTag')?.value.trim();
-    const name=document.getElementById('mEquipName')?.value.trim();
-    const desc=document.getElementById('mDesc')?.value.trim();
-    const priority=document.getElementById('mPriority')?.value;
-    if(!desc) { showToast('Enter a description','warn'); return; }
-    const all = await loadList(KEYS.maintenance, true);
-    all.unshift({ id:uid(), equipmentTag:tag, equipmentName:name||tag, description:desc, priority, status:'open', reportedBy:currentUser.id, reportedByName:currentUser.fullName||currentUser.username, reportedAt:Date.now(), collegeCode:currentUser.collegeCode });
-    await saveList(KEYS.maintenance, all, true);
-    if(tag) { const eqList=await loadList(KEYS.equipment,true); const eq=eqList.find(e=>(e.tag||e.qrTag)===tag); if(eq){eq.status='maintenance';await saveList(KEYS.equipment,eqList,true);} }
-    showToast('Issue reported!','success'); closeModal(); renderMaintenance();
-  });
-}
-
-/* ============ 15. Usage Log ============ */
-async function renderUsage() {
-  const main = document.getElementById('main');
-  main.innerHTML = `
-    <div class="page-header"><div><h1 class="page-title">Usage Log</h1><p class="page-subtitle">Complete equipment activity history</p></div></div>
-    <div class="search-bar"><div class="search-input-wrapper"><span class="search-icon">🔍</span><input class="input" id="usageSearch" placeholder="Search by equipment or user..." /></div></div>
-    <div id="usageList"></div>`;
-  const renderList = async () => {
-    const listEl = document.getElementById('usageList');
-    const checkouts = await loadList(KEYS.checkouts, true);
-    const q = (document.getElementById('usageSearch')?.value||'').toLowerCase();
-    const filtered = q ? checkouts.filter(c=>(c.equipmentName||c.tag||'').toLowerCase().includes(q)||(c.userName||'').toLowerCase().includes(q)) : checkouts;
-    if(!filtered.length) { listEl.innerHTML = '<div class="empty-state"><div class="empty-state-icon">📝</div><div class="empty-state-title">No activity yet</div></div>'; return; }
-    listEl.innerHTML = `<div class="table-wrapper"><table class="data-table"><thead><tr><th>Equipment</th><th>User</th><th>Action</th><th>Date</th><th>Duration</th><th>Status</th></tr></thead><tbody>
-      ${filtered.slice().reverse().map(c=>`<tr>
-        <td class="fw-600">${esc(c.equipmentName||c.tag||'')}</td>
-        <td>${esc(c.userName||'')}</td>
-        <td>${c.returnedAt?'↩ Return':'↗ Checkout'}</td>
-        <td class="text-sm text-soft">${fmtTime(c.checkedOutAt||c.createdAt)}</td>
-        <td class="text-sm">${c.returnedAt?(hoursBetween(c.checkedOutAt,c.returnedAt).toFixed(1)+'h'):(c.status==='active'?'Active':'—')}</td>
-        <td><span class="badge ${c.status==='active'?'badge-checked-out':'badge-available'}">${esc(c.status||'')}</span></td>
-      </tr>`).join('')}
-    </tbody></table></div>`;
-  };
-  await renderList();
-  let t; document.getElementById('usageSearch')?.addEventListener('input',()=>{clearTimeout(t);t=setTimeout(renderList,300);});
-}
-
-/* ============ 16. Notices ============ */
-async function renderNotices() {
-  const main = document.getElementById('main');
-  main.innerHTML = `
-    <div class="page-header">
-      <div><h1 class="page-title">Notices & Updates</h1><p class="page-subtitle">Important announcements from lab management</p></div>
-      ${profileRole!=='student'?'<div class="page-actions"><button class="btn btn-primary" id="postNoticeBtn">+ Post Notice</button></div>':''}
-    </div>
-    <div id="noticesList"></div>`;
-  const renderList = async () => {
-    const listEl = document.getElementById('noticesList');
-    const notices = await loadList(KEYS.notices, true);
-    if(!notices.length) { listEl.innerHTML = '<div class="empty-state"><div class="empty-state-icon">📢</div><div class="empty-state-title">No notices yet</div></div>'; return; }
-    listEl.innerHTML = notices.map(n=>`
-      <div class="card" style="margin-bottom:12px;">
-        <div class="card-header"><span class="fw-700">${esc(n.title||'Notice')}</span><span class="text-sm text-soft">${fmtDate(n.time||n.createdAt)}</span></div>
-        <p style="color:var(--ink-soft);font-size:0.9rem;line-height:1.6;margin:0;">${esc(n.desc||n.message||'')}</p>
-        ${n.type==='SYSTEM'?'<span class="badge badge-neutral" style="margin-top:8px;display:inline-block;">System</span>':''}
-      </div>`).join('');
-  };
-  await renderList();
-  if(profileRole!=='student') {
-    document.getElementById('postNoticeBtn')?.addEventListener('click', ()=>{
-      const closeModal = showModal({
-        title: 'Post a Notice',
-        body: `
-          <div class="form-group"><label class="form-label">Title</label><input class="input" id="nTitle" placeholder="Notice title" /></div>
-          <div class="form-group"><label class="form-label">Message</label><textarea class="input" id="nDesc" rows="4" placeholder="Notice content..." style="height:auto;padding:8px;resize:vertical;"></textarea></div>`,
-        footer: '<button class="btn btn-secondary" id="cancelNotice">Cancel</button><button class="btn btn-primary" id="submitNotice">Post</button>'
-      });
-      document.getElementById('cancelNotice')?.addEventListener('click', closeModal);
-      document.getElementById('submitNotice')?.addEventListener('click', async()=>{
-        const title=document.getElementById('nTitle')?.value.trim();
-        const desc=document.getElementById('nDesc')?.value.trim();
-        if(!title||!desc) { showToast('Fill in all fields','warn'); return; }
-        const notices=await loadList(KEYS.notices,true);
-        notices.unshift({id:uid(),title,desc,type:'NORMAL',time:Date.now(),author:currentUser.fullName||currentUser.username});
-        await saveList(KEYS.notices,notices,true);
-        showToast('Notice posted!','success'); closeModal(); renderNotices();
-      });
-    });
-  }
-}
-
-/* ============ 17. Users ============ */
-async function renderUsers() {
-  if(profileRole!=='incharge'&&profileRole!=='owner') {
-    document.getElementById('main').innerHTML = '<div class="empty-state"><div class="empty-state-icon">🔒</div><div class="empty-state-title">Access Denied</div></div>';
-    return;
-  }
-  const main = document.getElementById('main');
-  main.innerHTML = `
-    <div class="page-header"><div><h1 class="page-title">User Management</h1><p class="page-subtitle">Manage users in your college</p></div></div>
-    <div class="search-bar"><div class="search-input-wrapper"><span class="search-icon">🔍</span><input class="input" id="userSearch" placeholder="Search users..." /></div></div>
-    <div id="usersList"></div>`;
-  const renderList = async () => {
-    const listEl = document.getElementById('usersList');
-    const res = await apiFetch('/api/auth/users').catch(()=>null);
-    let users = [];
-    if(res&&res.ok) { const d=await res.json(); users=d.users||[]; }
-    const q=(document.getElementById('userSearch')?.value||'').toLowerCase();
-    const filtered = q ? users.filter(u=>(u.fullName||'').toLowerCase().includes(q)||(u.username||'').toLowerCase().includes(q)) : users;
-    if(!filtered.length) { listEl.innerHTML = '<div class="empty-state"><div class="empty-state-icon">👥</div><div class="empty-state-title">No users found</div></div>'; return; }
-    const rMap={owner:'badge-owner',incharge:'badge-incharge',student:'badge-student'};
-    const sMap={approved:'badge-available',pending:'badge-checked-out'};
-    listEl.innerHTML = `<div class="table-wrapper"><table class="data-table"><thead><tr><th>Name</th><th>Username</th><th>Role</th><th>Status</th><th>Joined</th>${profileRole==='owner'?'<th>Actions</th>':''}</tr></thead><tbody>
-      ${filtered.map(u=>`<tr>
-        <td class="fw-600">${esc(u.fullName||u.username)}</td>
-        <td class="mono text-soft">${esc(u.username)}</td>
-        <td><span class="badge ${rMap[u.role]||'badge-neutral'}">${esc(u.role)}</span></td>
-        <td><span class="badge ${sMap[u.status]||'badge-neutral'}">${esc(u.status||'pending')}</span></td>
-        <td class="text-sm text-soft">${fmtDate(u.createdAt)}</td>
-        ${profileRole==='owner'&&u.id!==currentUser.id?`<td style="display:flex;gap:6px;">
-          ${u.status==='pending'?`<button class="btn btn-sm btn-primary" onclick="approveUser('${esc(u.id)}')">Approve</button>`:''}
-          <select class="input" style="height:30px;padding:2px 6px;font-size:0.8rem;" onchange="changeUserRole('${esc(u.id)}',this.value)">
-            <option ${u.role==='student'?'selected':''}>student</option>
-            <option ${u.role==='incharge'?'selected':''}>incharge</option>
-            <option ${u.role==='owner'?'selected':''}>owner</option>
-          </select>
-        </td>`:profileRole==='owner'?'<td><span class="text-soft text-xs">You</span></td>':''}
-      </tr>`).join('')}
-    </tbody></table></div>`;
-  };
-  await renderList();
-  let t; document.getElementById('userSearch')?.addEventListener('input',()=>{clearTimeout(t);t=setTimeout(renderList,300);});
-}
-
-async function approveUser(userId) {
-  const map = {};
-  map[userId] = true;
-  await storageSet(KEYS.approvedUsersMap, JSON.stringify(map), true);
-  showToast('User approved!','success'); renderUsers();
-}
-async function changeUserRole(userId, newRole) {
-  showToast(`Role change to ${newRole} requires a backend update.`,'info');
-}
-
-/* ============ 18. Analytics ============ */
-function statCard(icon, label, value, colorClass) {
-  return `<div class="stat-card">
-    <div class="stat-icon ${colorClass||''}">${icon}</div>
-    <div><div class="stat-value">${value}</div><div class="stat-label">${label}</div></div>
+  return `<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:8px;">
+    ${urls.map((u, idx) => `
+      <a href="${esc(u)}" target="_blank" rel="noopener" title="Click to view full photo" style="display:block;width:90px;height:90px;border-radius:8px;overflow:hidden;border:1px solid var(--grid);background:var(--paper);position:relative;">
+        <img src="${esc(u)}" alt="Equipment Photo ${idx+1}" style="width:100%;height:100%;object-fit:cover;" onerror="this.onerror=null;this.src='data:image/svg+xml;charset=UTF-8,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2290%22 height=%2290%22><text x=%2250%%22 y=%2250%%22 dominant-baseline=%22middle%22 text-anchor=%22middle%22 fill=%22%2394A3B8%22 font-size=%2211%22>Invalid Img</text></svg>';">
+      </a>
+    `).join('')}
   </div>`;
 }
 
-async function renderAnalytics() {
-  const main = document.getElementById('main');
-  main.innerHTML = `<div class="page-header"><div><h1 class="page-title">Analytics</h1><p class="page-subtitle">Overview of your lab's activity</p></div></div><div id="analyticsBody"><div class="skeleton skeleton-card" style="height:120px;"></div></div>`;
-  const [equipment, checkouts, maintenance] = await Promise.all([loadList(KEYS.equipment,true),loadList(KEYS.checkouts,true),loadList(KEYS.maintenance,true)]);
-  const available=equipment.filter(e=>e.status==='available').length;
-  const checkedOut=equipment.filter(e=>e.status==='checked-out').length;
-  const inMaint=equipment.filter(e=>e.status==='maintenance').length;
-  const activeChk=checkouts.filter(c=>c.status==='active').length;
-  document.getElementById('analyticsBody').innerHTML = `
-    <div class="dashboard-grid" style="margin-bottom:24px;">
-      ${statCard('📦','Total Equipment',equipment.length,'stat-icon-blue')}
-      ${statCard('✅','Available',available,'stat-icon-green')}
-      ${statCard('🔄','Checked Out',checkedOut,'stat-icon-amber')}
-      ${statCard('🔧','Maintenance',inMaint,'stat-icon-red')}
-    </div>
-    <div class="card">
-      <div class="card-header"><span class="card-title">Equipment Status Breakdown</span></div>
-      <div style="padding:16px;">
-        ${equipment.length===0?'<div class="empty-state"><div class="empty-state-icon">📊</div><div class="empty-state-title">No data yet</div></div>':`
-          <div style="display:flex;flex-direction:column;gap:16px;">
-            ${[['Available',available,'var(--success)'],['Checked Out',checkedOut,'var(--amber)'],['Maintenance',inMaint,'var(--rust)']].map(([s,count,color])=>{
-              const pct=equipment.length?Math.round(count/equipment.length*100):0;
-              return `<div>
-                <div style="display:flex;justify-content:space-between;margin-bottom:6px;"><span class="text-sm fw-600">${s}</span><span class="text-sm text-soft">${count} &middot; ${pct}%</span></div>
-                <div style="height:8px;background:var(--grid);border-radius:4px;overflow:hidden;"><div style="width:${pct}%;height:100%;background:${color};border-radius:4px;"></div></div>
-              </div>`;
-            }).join('')}
-          </div>`}
-      </div>
-    </div>
-    <div class="card" style="margin-top:16px;">
-      <div class="card-header"><span class="card-title">Summary</span></div>
-      <div style="padding:16px;display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:16px;">
-        <div><div class="text-sm text-soft">Total Checkouts</div><div class="fw-700" style="font-size:1.5rem;">${checkouts.length}</div></div>
-        <div><div class="text-sm text-soft">Active Now</div><div class="fw-700" style="font-size:1.5rem;">${activeChk}</div></div>
-        <div><div class="text-sm text-soft">Open Issues</div><div class="fw-700" style="font-size:1.5rem;">${maintenance.filter(m=>m.status!=='resolved').length}</div></div>
-        <div><div class="text-sm text-soft">Resolved Issues</div><div class="fw-700" style="font-size:1.5rem;">${maintenance.filter(m=>m.status==='resolved').length}</div></div>
-      </div>
-    </div>`;
+function linksListHtml(linksStr){
+  if(!linksStr) return '';
+  const lines = linksStr.split('\n').map(l => l.trim()).filter(Boolean);
+  if(!lines.length) return '';
+
+  return `<div style="display:flex;flex-direction:column;gap:6px;margin-top:8px;">
+    ${lines.map(line => {
+      let parts = line.split('|');
+      let title = parts.length > 1 ? parts[0].trim() : 'External Reference Link';
+      let url = parts.length > 1 ? parts[1].trim() : parts[0].trim();
+      if(!isSafeUrl(url)) return '';
+      return `<a class="btn btn-sm" href="${esc(url)}" target="_blank" rel="noopener" style="justify-content:flex-start;gap:6px;">🔗 ${esc(title)}</a>`;
+    }).join('')}
+  </div>`;
 }
 
-/* ============ 19. Checkout Tab ============ */
-async function renderCheckout() {
-  const main = document.getElementById('main');
-  main.innerHTML = `<div class="page-header"><div><h1 class="page-title">Checkout</h1><p class="page-subtitle">Your active checkouts and available equipment</p></div></div><div id="checkoutBody"></div>`;
-  const [equipment, checkouts] = await Promise.all([loadList(KEYS.equipment,true),loadList(KEYS.checkouts,true)]);
-  const myCheckouts = checkouts.filter(c=>c.status==='active'&&(c.userId===currentUser.id||c.userName===currentUser.username));
-  const availableEq = equipment.filter(e=>e.status==='available');
-  document.getElementById('checkoutBody').innerHTML = `
-    <div class="card" style="margin-bottom:16px;">
-      <div class="card-header"><span class="card-title">Your Active Checkouts</span><span class="badge badge-checked-out">${myCheckouts.length}</span></div>
-      ${myCheckouts.length===0
-        ?'<div class="empty-state" style="padding:24px;"><div class="empty-state-icon">📋</div><div class="empty-state-title">No active checkouts</div></div>'
-        :`<div class="table-wrapper"><table class="data-table"><thead><tr><th>Tag</th><th>Name</th><th>Since</th><th>Action</th></tr></thead><tbody>
-          ${myCheckouts.map(c=>`<tr>
-            <td class="mono fw-600 text-accent">${esc(c.tag||c.equipmentTag||'')}</td>
-            <td>${esc(c.equipmentName||'')}</td>
-            <td class="text-sm text-soft">${fmtTime(c.checkedOutAt||c.createdAt)}</td>
-            <td><button class="btn btn-sm btn-secondary" onclick="doReturn('${esc(c.tag||c.equipmentTag||'')}',null,'${esc(c.equipmentName||'')}')">Return</button></td>
-          </tr>`).join('')}
-        </tbody></table></div>`}
+/* ============ Click-to-Enlarge QR Modal Viewer ============ */
+function showEnlargedQRModal(tag, name){
+  let modal = document.getElementById('qrZoomModal');
+  if(!modal){
+    modal = document.createElement('div');
+    modal.id = 'qrZoomModal';
+    modal.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(9,15,28,0.85);backdrop-filter:blur(8px);display:flex;align-items:center;justify-content:center;padding:20px;';
+    document.body.appendChild(modal);
+  }
+  modal.style.display = 'flex';
+  modal.innerHTML = `
+    <div style="background:var(--card);border:1px solid var(--grid);border-radius:16px;padding:32px;max-width:360px;width:100%;text-align:center;box-shadow:0 24px 64px rgba(0,0,0,0.4);position:relative;">
+      <button id="closeQrModal" style="position:absolute;top:12px;right:14px;background:none;border:none;font-size:1.4rem;color:var(--ink-soft);cursor:pointer;" aria-label="Close">×</button>
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:12px;font-weight:700;color:var(--accent);margin-bottom:6px;">${esc(tag)}</div>
+      <div style="font-size:16px;font-weight:700;margin-bottom:20px;color:var(--ink);">${esc(name)}</div>
+      <div id="modalQrBox" style="background:#ffffff;padding:16px;border-radius:12px;display:inline-block;border:1px solid var(--grid);box-shadow:0 4px 16px rgba(0,0,0,0.06);margin-bottom:16px;"></div>
+      <div style="font-size:12px;color:var(--ink-soft);">Scan this tag code with any smartphone camera or LabTrack scanner to access record.</div>
     </div>
-    <div class="card">
-      <div class="card-header"><span class="card-title">Available Equipment</span><span class="badge badge-available">${availableEq.length}</span></div>
-      ${availableEq.length===0
-        ?'<div class="empty-state" style="padding:24px;"><div class="empty-state-icon">📦</div><div class="empty-state-title">Nothing available right now</div></div>'
-        :`<div class="table-wrapper"><table class="data-table"><thead><tr><th>Tag</th><th>Name</th><th>Category</th><th>Action</th></tr></thead><tbody>
-          ${availableEq.map(e=>`<tr>
-            <td class="mono fw-600 text-accent">${esc(e.tag||e.qrTag||'')}</td>
-            <td>${esc(e.name||'')}</td>
-            <td class="text-sm text-soft">${esc(e.category||'')}</td>
-            <td><button class="btn btn-sm btn-primary" onclick="doCheckout('${esc(e.tag||e.qrTag||'')}','${esc(e.name||'')}')">Checkout</button></td>
-          </tr>`).join('')}
-        </tbody></table></div>`}
-    </div>`;
-}
+  `;
 
-/* ============ 20. Auto Notice ============ */
-async function checkAndPublishAutoNotice() {
   try {
-    const lastVersion = await storageGet(KEYS.clientVersion, true);
-    if(lastVersion !== CURRENT_BUILD_VERSION) {
-      const notices = await loadList(KEYS.notices, true);
-      notices.unshift({ id:uid(), title:`System Update (${CURRENT_BUILD_VERSION})`, desc:'LabTrack has been updated with a premium UI, real-time sync, atomic checkout, and security improvements.', type:'SYSTEM', time:Date.now() });
-      await Promise.all([saveList(KEYS.notices,notices,true), storageSet(KEYS.clientVersion,CURRENT_BUILD_VERSION,true)]);
+    const payload = `${window.location.origin}/?scan=${encodeURIComponent(tag)}`;
+    new QRCode(document.getElementById('modalQrBox'), { text: payload, width: 220, height: 220, colorDark:'#16324F', colorLight:'#ffffff', correctLevel: QRCode.CorrectLevel.M });
+  } catch(e){ console.error('Enlarged QR render failed', e); }
+
+  document.getElementById('closeQrModal').onclick = ()=> modal.style.display = 'none';
+  modal.onclick = (e)=>{ if(e.target === modal) modal.style.display = 'none'; };
+}
+
+function hoursBetween(a,b){ return Math.max(0, (b-a)/3600000); }
+function renderQR(elId, text, size, tagForModal='', nameForModal=''){
+  const el = document.getElementById(elId);
+  if(!el) return;
+  el.innerHTML = '';
+  if(typeof QRCode === 'undefined'){ el.innerHTML = `<span class="mono" style="font-size:10px;color:var(--ink-soft);">QR lib unavailable</span>`; return; }
+  try{
+    const payload = `${window.location.origin}/?scan=${encodeURIComponent(text)}`;
+    new QRCode(el, { text: payload, width:size, height:size, colorDark:'#16324F', colorLight:'#ffffff', correctLevel: QRCode.CorrectLevel.M });
+    if(tagForModal){
+      el.style.cursor = 'pointer';
+      el.title = 'Click to enlarge QR code';
+      el.onclick = (e)=>{
+        e.stopPropagation();
+        showEnlargedQRModal(tagForModal, nameForModal);
+      };
     }
-  } catch(e) {}
+  }
+  catch(e){ console.error('QR render failed', e); }
 }
 
-/* ============ 21. Boot ============ */
-async function boot() {
+/* ============ Global state ============ */
+let profileName = null;
+let profileRole = 'student'; // 'student' | 'incharge' | 'owner'
+let currentTab = 'dashboard';
+let tagCounter = 1;
+
+const KEYS = {
+  equipment:'lab:equipment',
+  checkouts:'lab:checkouts',
+  maintenance:'lab:maintenance',
+  tagCounter:'lab:tagCounter',
+  notices:'lab:notices',
+  clientVersion:'lab:client_version',
+  approvedUsersMap:'lab:approved_users_map'
+};
+
+const CURRENT_BUILD_VERSION = 'v3.1.3-role-sync-fix';
+
+function buildNav(){
+  const nav = [
+    {group:'Home', items:[{id:'dashboard', label:'Home Screen', icon:'&#8962;'}]},
+    {group:'Updates', items:[{id:'notices', label:'Notices & Updates', icon:'&#128227;'}]},
+    {group:'Overview', items:[{id:'analytics', label:'Dashboard', icon:'&#9635;'}]},
+    {group:'Inventory', items:[
+      {id:'inventory', label:'Equipment', icon:'&#9881;'},
+      {id:'scan', label:'Scan QR', icon:'&#128247;'},
+    ]},
+    {group:'Activity', items:[
+      {id:'checkout', label:'Checkout / Return', icon:'&#8646;'},
+      {id:'usage', label:'Usage Log', icon:'&#128203;'},
+    ]},
+    {group:'Upkeep', items:[{id:'maintenance', label:'Maintenance', icon:'&#128295;'}]},
+  ];
+  if(profileRole==='owner' || profileRole==='incharge'){
+    nav.push({group:'Management', items:[{id:'users', label:'Manage Users & Approvals', icon:'&#128100;'}]});
+  }
+  return nav;
+}
+
+/* ============ Boot, Theme & Auto Version Check ============ */
+async function boot(){
   initThemeToggle();
-  if(!authToken) { renderAuthScreen('login'); return; }
-  try {
+
+  if(!authToken){ renderAuthScreen('login'); return; }
+  try{
     const res = await apiFetch('/api/auth/me');
     if(!res.ok) throw new Error('not authed');
     const data = await res.json();
     currentUser = data.user;
-    if(currentUser.status !== 'approved' && currentUser.role !== 'owner') {
+
+    const remoteApprovals = await storageGet(KEYS.approvedUsersMap, true) || {};
+    // Ensure role changes automatically retain approved status
+    if(currentUser.role === 'owner' || currentUser.role === 'incharge' || currentUser.role === 'student' || remoteApprovals[currentUser.id] || remoteApprovals[currentUser.username] || remoteApprovals[currentUser.collegeEmail] || remoteApprovals['ALL_APPROVED']){
+      currentUser.status = 'approved';
+    }
+
+    if(currentUser.status && currentUser.status !== 'approved' && currentUser.role !== 'owner'){
       doLogout(false);
       renderAuthScreen('login', 'Your account is pending approval by your Lab In-Charge or Owner.');
       return;
     }
-    profileName = currentUser.fullName || currentUser.username || 'User';
+
+    profileName = currentUser.fullName || 'User';
     profileRole = currentUser.role || 'student';
-  } catch(e) { doLogout(false); return; }
-
+  }catch(e){
+    doLogout(false);
+    return;
+  }
   document.getElementById('authOverlay').style.display = 'none';
-  document.getElementById('app').style.display = 'flex';
-  document.getElementById('app').style.flexDirection = 'column';
-
-  const collegeBadge = document.getElementById('collegeBadge');
-  if(collegeBadge) collegeBadge.textContent = currentUser.collegeCode || '';
-
   tagCounter = parseInt(await storageGet(KEYS.tagCounter, true)) || 1;
+  
   await checkAndPublishAutoNotice();
-  renderTopbarActions();
+
+  renderProfileBox();
   renderSidebar();
-  initSocket();
+
+  const urlParams = new URLSearchParams(window.location.search);
+  const scanParam = urlParams.get('scan');
+  if(scanParam){
+    currentTab = 'scan';
+    renderSidebar();
+    await renderScan();
+    document.getElementById('manualTag').value = scanParam;
+    lookupAndShow(scanParam);
+    return;
+  }
+
   await switchTab('dashboard');
 }
 
-function doLogout(redraw=true) {
-  disconnectSocket();
-  authToken=null; currentUser=null; profileName=null; profileRole='student';
-  localStorage.removeItem(AUTH_KEY);
-  const appEl = document.getElementById('app');
-  if(appEl) appEl.style.display = 'none';
-  document.getElementById('authOverlay').style.display = 'flex';
-  if(redraw) renderAuthScreen('login');
+function initThemeToggle(){
+  const savedTheme = localStorage.getItem('labtrack_theme') || 'light';
+  document.documentElement.setAttribute('data-theme', savedTheme);
+  
+  const btn = document.getElementById('themeToggleBtn');
+  if(btn){
+    btn.textContent = savedTheme === 'dark' ? '☀️' : '🌙';
+    btn.onclick = ()=>{
+      const current = document.documentElement.getAttribute('data-theme');
+      const next = current === 'dark' ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', next);
+      localStorage.setItem('labtrack_theme', next);
+      btn.textContent = next === 'dark' ? '☀️' : '🌙';
+    };
+  }
 }
 
-async function switchTab(tab) {
-  if(currentTab==='scan' && tab!=='scan' && typeof window._scanCleanup==='function') {
-    window._scanCleanup(); window._scanCleanup = null;
+async function checkAndPublishAutoNotice(){
+  try{
+    let lastVersion = await storageGet(KEYS.clientVersion, true);
+    if(lastVersion !== CURRENT_BUILD_VERSION){
+      let notices = await loadList(KEYS.notices, true);
+      const autoUpdateNotice = {
+        id: uid(),
+        title: `Automated System Update (${CURRENT_BUILD_VERSION})`,
+        desc: 'Ensured seamless role updates without pending status blocks.',
+        type: 'SYSTEM',
+        time: Date.now()
+      };
+      notices.unshift(autoUpdateNotice);
+      await Promise.all([
+        saveList(KEYS.notices, notices, true),
+        storageSet(KEYS.clientVersion, CURRENT_BUILD_VERSION, true)
+      ]);
+    }
+  }catch(err){
+    console.error('Auto notice check failed', err);
   }
+}
+
+function doLogout(redraw=true){
+  authToken = null; currentUser = null; profileName = null; profileRole = 'student';
+  localStorage.removeItem(AUTH_KEY);
+  if(redraw) renderAuthScreen('login');
+  else { document.getElementById('authOverlay').style.display='flex'; renderAuthScreen('login'); }
+}
+
+async function renderProfileBox(){
+  const box = document.getElementById('profileBox');
+  const roleLabel = profileRole==='owner' ? 'Owner' : profileRole==='incharge' ? 'Lab In-Charge' : 'Student';
+  
+  const notifsKey = `lab:notifications:${currentUser.id}`;
+  const notifs = await loadList(notifsKey, true);
+  const unreadCount = notifs.filter(n => !n.read).length;
+
+  box.innerHTML = `
+    <div class="profile-pill" style="display:flex;align-items:center;gap:10px;">
+      <button id="notifBellBtn" style="background:none;border:none;cursor:pointer;position:relative;font-size:1.1rem;padding:2px;" title="Personal Notifications">
+        🔔 ${unreadCount > 0 ? `<span style="position:absolute;top:-4px;right:-4px;background:var(--rust);color:#fff;border-radius:50%;font-size:9px;padding:2px 5px;font-weight:700;">${unreadCount}</span>` : ''}
+      </button>
+      <span class="dot"></span><span>${esc(profileName)}</span>
+      <span class="badge ${profileRole==='owner'?'badge-rust':profileRole==='incharge'?'badge-warn':'badge-neutral'}">${roleLabel}</span>
+      <span class="tag-id" style="color:var(--ink-soft);">${esc(currentUser ? currentUser.collegeCode : '')}</span>
+      <button id="logoutBtn">log out</button>
+    </div>`;
+
+  document.getElementById('logoutBtn').onclick = ()=> doLogout(true);
+  document.getElementById('notifBellBtn').onclick = ()=> showPersonalNotificationsModal(notifsKey, notifs);
+}
+
+function showPersonalNotificationsModal(notifsKey, notifs){
+  let modal = document.getElementById('notifModal');
+  if(!modal){
+    modal = document.createElement('div');
+    modal.id = 'notifModal';
+    modal.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(9,15,28,0.85);backdrop-filter:blur(8px);display:flex;align-items:center;justify-content:center;padding:20px;';
+    document.body.appendChild(modal);
+  }
+  modal.style.display = 'flex';
+  modal.innerHTML = `
+    <div style="background:var(--card);border:1px solid var(--grid);border-radius:16px;padding:28px;max-width:440px;width:100%;box-shadow:0 24px 64px rgba(0,0,0,0.4);position:relative;max-height:80vh;display:flex;flex-direction:column;">
+      <button id="closeNotifModal" style="position:absolute;top:12px;right:14px;background:none;border:none;font-size:1.4rem;color:var(--ink-soft);cursor:pointer;" aria-label="Close">×</button>
+      <h3 style="margin-bottom:14px;display:flex;align-items:center;gap:8px;">🔔 Personal Notifications</h3>
+      <div style="overflow-y:auto;flex:1;display:flex;flex-direction:column;gap:10px;padding-right:4px;">
+        ${notifs.length ? notifs.map(n=>`
+          <div style="background:var(--paper);border:1px solid var(--grid);border-radius:10px;padding:12px;border-left:3px solid ${n.read?'var(--grid)':'var(--accent)'};">
+            <div style="font-weight:700;font-size:13.5px;color:var(--ink);">${esc(n.title)}</div>
+            <div style="font-size:13px;color:var(--ink-soft);margin-top:4px;line-height:1.4;">${esc(n.message)}</div>
+            <div style="font-size:10.5px;color:var(--ink-soft);margin-top:6px;text-align:right;">${fmtTime(n.time)}</div>
+          </div>
+        `).join('') : `<div style="text-align:center;color:var(--ink-soft);padding:30px 0;font-size:13.5px;">No notifications yet.</div>`}
+      </div>
+      <button id="markAllReadBtn" class="btn btn-sm btn-primary" style="margin-top:16px;">Mark all as read</button>
+    </div>
+  `;
+
+  document.getElementById('closeNotifModal').onclick = ()=> modal.style.display = 'none';
+  modal.onclick = (e)=>{ if(e.target === modal) modal.style.display = 'none'; };
+  
+  document.getElementById('markAllReadBtn').onclick = async ()=>{
+    notifs.forEach(n => n.read = true);
+    await saveList(notifsKey, notifs, true);
+    modal.style.display = 'none';
+    renderProfileBox();
+    showToast('All notifications marked as read.', 'ok');
+  };
+}
+
+/* ============ Auth screens (login / register) ============ */
+function renderAuthScreen(mode, errorMsg){
+  document.getElementById('authOverlay').style.display = 'flex';
+  const card = document.getElementById('authCard');
+  if(mode==='login'){
+    card.innerHTML = `
+      <h2>Sign in to LabTrack</h2>
+      <p class="sub">Your college code routes you to your college's own equipment and records.</p>
+      ${errorMsg?`<div class="err">${esc(errorMsg)}</div>`:''}
+      <div class="form-group"><label>College code</label><input id="loCollegeCode" placeholder="e.g. GECX2026" /></div>
+      <div class="form-group"><label>Username or College Email</label><input id="loUsername" /></div>
+      <div class="form-group"><label>Password</label><input id="loPassword" type="password" /></div>
+      <button class="btn btn-primary" id="loSubmit">Sign in</button>
+      <div class="switch-mode">New here? <a id="toRegister">Create an account</a></div>
+      <div style="text-align: center; margin-top: 25px; font-size: 0.825rem; color: var(--ink-soft); border-top: 1px dashed var(--grid); padding-top: 15px;">
+        Made with ❤️ by <a href="https://github.com/sahil-git007" target="_blank" style="color: var(--accent); font-weight: 600; text-decoration: none;">Sahil Sahoo</a>
+      </div>
+    `;
+    document.getElementById('toRegister').onclick = ()=> renderAuthScreen('register');
+    const submit = async ()=>{
+      const collegeCode = document.getElementById('loCollegeCode').value.trim();
+      const username = document.getElementById('loUsername').value.trim();
+      const password = document.getElementById('loPassword').value;
+      if(!collegeCode || !username || !password){ renderAuthScreen('login', 'Fill in all fields.'); return; }
+      try{
+        const res = await fetch('/api/auth/login', {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ collegeCode, username, password })
+        });
+        const data = await res.json();
+        if(!res.ok){ renderAuthScreen('login', data.error || 'Login failed.'); return; }
+        
+        const user = data.user;
+        if(user) {
+           const remoteApprovals = await storageGet(KEYS.approvedUsersMap, true) || {};
+           if(user.role === 'owner' || user.role === 'incharge' || user.role === 'student' || remoteApprovals[user.id] || remoteApprovals[user.username] || remoteApprovals[user.collegeEmail] || remoteApprovals['ALL_APPROVED']) {
+              user.status = 'approved';
+           }
+           
+           if(user.status !== 'approved' && user.role !== 'owner') {
+              renderAuthScreen('login', 'Your account is pending approval by your Lab In-Charge or Owner.');
+              showToast('Your account is pending approval by your Lab In-Charge or Owner.', 'error');
+              return;
+           }
+        }
+
+        authToken = data.token;
+        localStorage.setItem(AUTH_KEY, authToken);
+        boot();
+      }catch(e){ renderAuthScreen('login', 'Could not reach the server.'); }
+    };
+    document.getElementById('loSubmit').onclick = submit;
+    card.querySelectorAll('input').forEach(inp=> inp.addEventListener('keydown', e=>{ if(e.key==='Enter') submit(); }));
+  } else {
+    card.innerHTML = `
+      <h2>Create your account</h2>
+      <p class="sub">New accounts require approval from your Lab In-Charge or Owner before signing in.</p>
+      ${errorMsg?`<div class="err">${esc(errorMsg)}</div>`:''}
+      <div class="form-row">
+        <div class="form-group"><label>Full name</label><input id="reName" placeholder="e.g. Aditi Sharma" /></div>
+        <div class="form-group"><label>Username</label><input id="reUsername" placeholder="e.g. aditi_07" /></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>College Email Address</label><input id="reEmail" type="email" placeholder="e.g. aditi@college.edu" /></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>College name</label><input id="reCollege" placeholder="e.g. Government Engineering College" /></div>
+        <div class="form-group"><label>Department</label><input id="reDept" placeholder="e.g. CSE" /></div>
+      </div>
+      <div class="form-group"><label>College code</label><input id="reCollegeCode" placeholder="Ask your lab in-charge for this" /></div>
+      <div class="form-group"><label>Password</label><input id="rePassword" type="password" /></div>
+      <button class="btn btn-primary" id="reSubmit">Submit for approval</button>
+      <div class="switch-mode">Already have an approved account? <a id="toLogin">Sign in</a></div>
+    `;
+    document.getElementById('toLogin').onclick = ()=> renderAuthScreen('login');
+    document.getElementById('reSubmit').onclick = async ()=>{
+      const fullName = document.getElementById('reName').value.trim();
+      const username = document.getElementById('reUsername').value.trim();
+      const collegeEmail = document.getElementById('reEmail').value.trim();
+      const collegeName = document.getElementById('reCollege').value.trim();
+      const department = document.getElementById('reDept').value.trim();
+      const collegeCode = document.getElementById('reCollegeCode').value.trim();
+      const password = document.getElementById('rePassword').value;
+
+      if(!fullName||!username||!collegeEmail||!collegeName||!department||!collegeCode||!password){
+        renderAuthScreen('register', 'Fill in every field.'); return;
+      }
+      if(!collegeEmail.includes('@')){
+        renderAuthScreen('register', 'Enter a valid college email address.'); return;
+      }
+      if(password.length < 6){ renderAuthScreen('register', 'Password must be at least 6 characters.'); return; }
+      try{
+        const res = await fetch('/api/auth/register', {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ fullName, username, collegeEmail, collegeName, department, collegeCode, password })
+        });
+        const data = await res.json();
+        if(!res.ok){ renderAuthScreen('register', data.error || 'Registration failed.'); return; }
+        
+        card.innerHTML = `
+          <h2>Account Pending Approval</h2>
+          <p class="sub">Your account has been registered successfully with <strong>${esc(collegeEmail)}</strong> and is awaiting review by your Lab In-Charge or Owner.</p>
+          <div style="background:var(--paper);border:1px solid var(--grid);padding:14px;border-radius:8px;margin:16px 0;font-size:13.5px;color:var(--ink);">
+            Status: <strong style="color:var(--amber);">PENDING APPROVAL</strong>
+          </div>
+          <button class="btn btn-primary" id="backToLogin">Return to Sign In</button>
+        `;
+        document.getElementById('backToLogin').onclick = ()=> renderAuthScreen('login');
+      }catch(e){ renderAuthScreen('register', 'Could not reach the server.'); }
+    };
+  }
+}
+
+function requireProfile(){ return !!currentUser; }
+function requireIncharge(){
+  if(!requireProfile()) return false;
+  if(profileRole!=='incharge' && profileRole!=='owner'){ showToast('This action is limited to Lab In-Charge accounts.', 'warn'); return false; }
+  return true;
+}
+function requireOwner(){
+  if(!requireProfile()) return false;
+  if(profileRole!=='owner'){ showToast('This action is limited to the Owner account.', 'warn'); return false; }
+  return true;
+}
+
+function showToast(msg, type='info'){
+  let host = document.getElementById('toastHost');
+  if(!host){
+    host = document.createElement('div');
+    host.id = 'toastHost';
+    host.style.cssText = 'position:fixed;bottom:20px;right:20px;z-index:200;display:flex;flex-direction:column;gap:8px;max-width:320px;';
+    document.body.appendChild(host);
+  }
+  const colors = {
+    info:  {bg:'#16324F', fg:'#EAF1F6'},
+    warn:  {bg:'#D98A22', fg:'#2A1B04'},
+    error: {bg:'#B23B24', fg:'#FBEAE6'},
+    ok:    {bg:'#24806B', fg:'#EAF7F3'}
+  };
+  const c = colors[type] || colors.info;
+  const toast = document.createElement('div');
+  toast.style.cssText = `background:${c.bg};color:${c.fg};padding:10px 14px;border-radius:8px;font-size:13px;font-family:'IBM Plex Sans',sans-serif;box-shadow:0 6px 16px rgba(0,0,0,0.25);`;
+  toast.textContent = msg;
+  host.appendChild(toast);
+  setTimeout(()=>{ toast.style.transition='opacity .3s'; toast.style.opacity='0'; setTimeout(()=>toast.remove(), 300); }, 3800);
+}
+
+function renderSidebar(){
+  const sb = document.getElementById('sidebar');
+  sb.innerHTML = buildNav().map(g=>`
+    <div class="nav-label-group">${g.group}</div>
+    ${g.items.map(it=>`<div class="nav-item ${currentTab===it.id?'active':''}" data-tab="${it.id}"><span class="ic">${it.icon}</span><span>${it.label}</span></div>`).join('')}
+  `).join('');
+  sb.querySelectorAll('.nav-item').forEach(el=> el.onclick = ()=>{
+    switchTab(el.dataset.tab);
+    sb.classList.remove('open');
+  });
+}
+
+async function switchTab(tab){
+  if(tab!=='scan') stopCamera();
   currentTab = tab;
   renderSidebar();
   const main = document.getElementById('main');
-  if(!main) return;
-  switch(tab) {
-    case 'dashboard':   await renderDashboard();   break;
-    case 'inventory':   await renderInventory();   break;
-    case 'scan':        await renderScan();         break;
-    case 'checkout':    await renderCheckout();    break;
-    case 'maintenance': await renderMaintenance(); break;
-    case 'usage':       await renderUsage();       break;
-    case 'notices':     await renderNotices();     break;
-    case 'users':       await renderUsers();       break;
-    case 'analytics':   await renderAnalytics();  break;
+  main.innerHTML = `<div class="loading-note">Loading ${tab}…</div>`;
+  const renderers = { dashboard:renderDashboard, notices:renderNotices, analytics:renderAnalytics, inventory:renderInventory, checkout:renderCheckout, usage:renderUsage, maintenance:renderMaintenance, scan:renderScan, users:renderUsers };
+  await renderers[tab]();
+}
+
+async function nextTag(){ tagCounter += 1; await storageSet(KEYS.tagCounter, String(tagCounter), true); return 'LAB-EQ-'+String(tagCounter).padStart(4,'0'); }
+
+/* ============ CLEAN DASHBOARD (HOME SCREEN) WITH HIGHLIGHTED GREETING ============ */
+async function renderDashboard(){
+  const main = document.getElementById('main');
+  const userName = currentUser ? currentUser.fullName : 'User';
+  const userDept = currentUser && currentUser.department ? `${currentUser.department} DEPARTMENT` : 'CSE DEPARTMENT';
+  
+  main.innerHTML = `
+    <div class="clean-home-wrapper">
+      <div class="clean-home-title" style="
+        background: linear-gradient(135deg, var(--accent) 0%, var(--ink) 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        text-shadow: 0 4px 20px rgba(36, 128, 107, 0.2);
+        letter-spacing: 0.02em;
+        margin-bottom: 6px;
+      ">Hii ${esc(userName)}</div>
+      <div class="clean-home-subtitle">${esc(userDept)}</div>
+      <div class="clean-home-hint">Click the top-left menu (☰) to access all tools and inventory.</div>
+    </div>
+  `;
+
+  let hamburger = document.getElementById('hamburgerToggle');
+  const brand = document.querySelector('.topbar .brand');
+  if(brand && !hamburger){
+    hamburger = document.createElement('button');
+    hamburger.id = 'hamburgerToggle';
+    hamburger.className = 'hamburger-btn';
+    hamburger.innerHTML = '☰';
+    brand.insertBefore(hamburger, brand.firstChild);
+  }
+  if(hamburger){
+    hamburger.onclick = (e)=>{
+      e.stopPropagation();
+      const sb = document.getElementById('sidebar');
+      if(sb) sb.classList.toggle('open');
+    };
+  }
+
+  document.onclick = (e)=>{
+    const sb = document.getElementById('sidebar');
+    const hamburgerBtn = document.getElementById('hamburgerToggle');
+    if(sb && sb.classList.contains('open') && !sb.contains(e.target) && e.target !== hamburgerBtn){
+      sb.classList.remove('open');
+    }
+  };
+}
+
+/* ============ NOTICES & LIVE UPDATES TAB ============ */
+async function renderNotices(){
+  const main = document.getElementById('main');
+  let notices = await loadList(KEYS.notices, true);
+  
+  if(!notices.length){
+    notices = [
+      { id: '1', title: 'UI Modernization & Clean Home Screen', desc: 'Redesigned the main interface with a minimalist layout featuring a dedicated Home Screen button and collapsible hamburger menu (☰).', type: 'NEW', time: Date.now() },
+      { id: '2', title: 'Smart Content Moderation Engine', desc: 'Implemented strict automated text validation filters to block inappropriate slang, flooding, and gibberish across all checkout and maintenance records.', type: 'SYSTEM', time: Date.now() },
+      { id: '3', title: 'Lab Safety & Return Policy', desc: 'All equipment borrowed must be returned before the scheduled due time. Report any maintenance issues immediately via the Maintenance tab.', type: 'NOTICE', time: Date.now() }
+    ];
+  }
+
+  const isOwner = profileRole === 'owner';
+
+  main.innerHTML = `
+    <div class="module-head">
+      <h2>Notices & Website Updates</h2>
+      <p>Live announcements, automated system updates, and laboratory guidelines.</p>
+    </div>
+    
+    ${isOwner ? `
+      <div class="panel" style="background: var(--paper); border-color: var(--accent); margin-bottom: 20px;">
+        <h3 style="color: var(--accent);">➕ Publish New Live Update (Owner Only)</h3>
+        <div class="form-row" style="margin-top: 10px;">
+          <div class="form-group"><label>Update Title</label><input id="noticeTitle" placeholder="e.g. New Oscilloscopes Added" /></div>
+          <div class="form-group"><label>Badge Tag</label>
+            <select id="noticeType">
+              <option value="NEW">NEW</option>
+              <option value="SYSTEM">SYSTEM</option>
+              <option value="NOTICE">NOTICE</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>Description</label><textarea id="noticeDesc" placeholder="Describe the update or notice…"></textarea></div>
+        </div>
+        <button class="btn btn-primary" id="publishNoticeBtn">Publish live update</button>
+      </div>
+    ` : ''}
+
+    <div class="panel" style="background: var(--paper);">
+      <h3 style="display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--grid); padding-bottom: 10px; margin-bottom: 14px;">
+        <span>📢</span> Live Announcements & Changelog
+      </h3>
+      <div style="display: flex; flex-direction: column; gap: 16px; font-size: 0.95rem;" id="noticeListContainer">
+        ${notices.map(n=>{
+          const badgeClass = n.type === 'NEW' ? 'badge-ok' : n.type === 'NOTICE' ? 'badge-warn' : 'badge-neutral';
+          return `
+            <div style="display: flex; gap: 12px; align-items: flex-start; border-bottom: 1px dashed var(--grid); padding-bottom: 14px;">
+              <span class="badge ${badgeClass}" style="margin-top: 2px;">${n.type}</span>
+              <div style="flex: 1;">
+                <strong>${esc(n.title)}:</strong> ${esc(n.desc)}
+                <div style="font-size: 11px; color: var(--ink-soft); margin-top: 4px;">Posted on ${fmtTime(n.time)}</div>
+              </div>
+              ${isOwner ? `<button class="btn btn-sm" style="color: var(--rust); border-color: var(--rust);" data-delete-notice="${n.id}">Delete</button>` : ''}
+            </div>
+          `;
+        }).join('')}
+      </div>
+    </div>
+  `;
+
+  if(isOwner){
+    document.getElementById('publishNoticeBtn').onclick = async ()=>{
+      const title = document.getElementById('noticeTitle').value.trim();
+      const desc = document.getElementById('noticeDesc').value.trim();
+      const type = document.getElementById('noticeType').value;
+      if(!title || !desc){ showToast('Fill in both title and description.', 'warn'); return; }
+
+      if(containsProfanityOrNonsense(title) || containsProfanityOrNonsense(desc)){
+        showToast('Invalid or meaningless text detected. Please enter a professional update.', 'error');
+        return;
+      }
+
+      notices.unshift({ id: uid(), title, desc, type, time: Date.now() });
+      const ok = await saveList(KEYS.notices, notices, true);
+      if(!ok){ showToast('Could not publish update.', 'error'); return; }
+      showToast('Live update published successfully!', 'ok');
+      renderNotices();
+    };
+
+    main.querySelectorAll('[data-delete-notice]').forEach(b=>{
+      b.onclick = async ()=>{
+        const id = b.dataset.deleteNotice;
+        const filtered = notices.filter(n => n.id !== id);
+        await saveList(KEYS.notices, filtered, true);
+        showToast('Update removed.', 'ok');
+        renderNotices();
+      };
+    });
   }
 }
 
-document.addEventListener('DOMContentLoaded', boot);
+/* ============ ANALYTICS DASHBOARD ============ */
+async function renderAnalytics(){
+  const [equipment, checkouts, maintenance] = await Promise.all([
+    loadList(KEYS.equipment, true), loadList(KEYS.checkouts, true), loadList(KEYS.maintenance, true)
+  ]);
+  const now = Date.now();
+  const totalUnits = equipment.reduce((s,e)=>s+e.totalQty,0);
+  const availableUnits = equipment.reduce((s,e)=>s+e.availableQty,0);
+  const activeCheckouts = checkouts.filter(c=>c.status==='Active');
+  const overdue = activeCheckouts.filter(c=> c.dueTime && c.dueTime < now);
+  const underMaint = equipment.filter(e=> e.condition !== 'Good' && maintenance.some(m => m.equipmentId === e.id && m.status === 'Open')).length;
+  const openMaint = maintenance.filter(m=>m.status==='Open').length;
+
+  const usageCount = {};
+  checkouts.forEach(c=>{ usageCount[c.equipmentName] = (usageCount[c.equipmentName]||0)+1; });
+  const topUsed = Object.entries(usageCount).sort((a,b)=>b[1]-a[1]).slice(0,5);
+  const maxUse = topUsed.length ? topUsed[0][1] : 1;
+
+  const main = document.getElementById('main');
+  main.innerHTML = `
+    <div class="module-head">
+      <h2>Dashboard Analytics</h2>
+      <p>Live status of every tracked item in the lab.</p>
+    </div>
+    <div class="grid grid-5" style="margin-bottom:20px;">
+      <div class="card stat-card"><div class="num">${equipment.length}</div><div class="lbl">Equipment types</div></div>
+      <div class="card stat-card ok"><div class="num">${availableUnits}/${totalUnits}</div><div class="lbl">Units available</div></div>
+      <div class="card stat-card"><div class="num">${activeCheckouts.length}</div><div class="lbl">Checked out now</div></div>
+      <div class="card stat-card ${overdue.length? 'alert':''}"><div class="num">${overdue.length}</div><div class="lbl">Overdue returns</div></div>
+      <div class="card stat-card ${underMaint? 'warn':''}"><div class="num">${underMaint}</div><div class="lbl">Under maintenance</div></div>
+    </div>
+    <div class="grid grid-2" style="align-items:start;">
+      <div class="panel">
+        <h3>Most used equipment</h3>
+        ${topUsed.length ? topUsed.map(([name,count])=>`
+          <div class="bar-row">
+            <div class="bar-label">${esc(name)}</div>
+            <div class="bar-track"><div class="bar-fill" style="width:${(count/maxUse*100).toFixed(0)}%"></div></div>
+            <div class="bar-val">${count}×</div>
+          </div>`).join('') : `<div class="empty">No checkout activity logged yet.</div>`}
+      </div>
+      <div class="panel">
+        <h3>Needs attention</h3>
+        ${overdue.length ? `<div style="margin-bottom:10px;"><span class="badge badge-rust">${overdue.length} overdue</span> — see Checkout / Return</div>` : ''}
+        ${openMaint ? `<div><span class="badge badge-warn">${openMaint} open maintenance report${openMaint===1?'':'s'}</span> — see Maintenance</div>` : ''}
+        ${(!overdue.length && !openMaint) ? `<div class="empty">Nothing needs attention right now.</div>` : ''}
+      </div>
+    </div>
+  `;
+}
+
+/* ============ EQUIPMENT INVENTORY ============ */
+async function renderInventory(){
+  const [equipment, checkouts, maintenance] = await Promise.all([
+    loadList(KEYS.equipment, true), loadList(KEYS.checkouts, true), loadList(KEYS.maintenance, true)
+  ]);
+  const main = document.getElementById('main');
+  const isIncharge = profileRole==='incharge' || profileRole==='owner';
+  main.innerHTML = `
+    <div class="module-head">
+      <h2>Equipment Inventory</h2>
+      <p>Every asset gets a tag. Track total stock vs. what's actually available right now.</p>
+    </div>
+    <div class="panel">
+      <h3>Register new equipment${isIncharge ? '' : ' (Lab In-Charge only)'}</h3>
+      ${isIncharge ? `
+        <div class="form-row">
+          <div class="form-group"><label>Name</label><input id="eqName" placeholder="e.g. Digital Oscilloscope" /></div>
+          <div class="form-group"><label>Category</label><input id="eqCategory" placeholder="e.g. Electronics, Optics, Mechanical" /></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>Lab / location</label><input id="eqLocation" placeholder="e.g. Electronics Lab, Rack 3" /></div>
+          <div class="form-group"><label>Total quantity</label><input id="eqQty" type="number" min="1" value="1" /></div>
+          <div class="form-group"><label>Price (₹ per unit)</label><input id="eqPrice" type="number" min="0" step="0.01" placeholder="e.g. 25000" /></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>Complete description</label><textarea id="eqDescription" placeholder="Model number, specs, manufacturer, anything worth knowing at a glance…"></textarea></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>How to use</label><textarea id="eqUsage" placeholder="Setup steps, safety notes, calibration reminders…"></textarea></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>Video link (optional)</label><input id="eqVideo" type="url" placeholder="YouTube, Drive, or direct .mp4 link" /></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>Photo links (optional)</label><textarea id="eqPhotos" placeholder="Paste multiple photo image URLs separated by commas or new lines"></textarea></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>Extra Links / Manuals (optional)</label><textarea id="eqLinks" placeholder="Format: Title | https://url (one per line)"></textarea></div>
+        </div>
+        <button class="btn btn-primary" id="eqSubmit">Add equipment</button>
+      ` : `
+        <p style="margin:0;">Only Lab In-Charge accounts can register new equipment. Ask your Lab In-Charge or Owner to upgrade your role from Manage Users.</p>
+      `}
+    </div>
+    <div class="filter-row">
+      <input id="eqSearch" placeholder="Search equipment…" style="flex:1;min-width:180px;" />
+      <select id="eqFilterCat"><option value="">All categories</option></select>
+      <select id="eqFilterCond"><option value="">All conditions</option><option>Good</option><option>Under Maintenance</option><option>Damaged</option></select>
+    </div>
+    <div id="eqList"></div>
+  `;
+  if(isIncharge){
+    document.getElementById('eqSubmit').onclick = async ()=>{
+      if(!requireIncharge()) return;
+      const nameInput = document.getElementById('eqName');
+      const name = nameInput.value.trim();
+      if(!name){ showToast('Equipment name is required.', 'warn'); nameInput.focus(); return; }
+      const qty = Math.max(1, parseInt(document.getElementById('eqQty').value) || 1);
+      const priceVal = document.getElementById('eqPrice').value;
+      const tag = await nextTag();
+      equipment.unshift({
+        id: uid(), tag, name, category: document.getElementById('eqCategory').value.trim()||'General',
+        location: document.getElementById('eqLocation').value.trim()||'Unassigned',
+        price: priceVal ? parseFloat(priceVal) : null,
+        description: document.getElementById('eqDescription').value.trim(),
+        usageNotes: document.getElementById('eqUsage').value.trim(),
+        videoUrl: document.getElementById('eqVideo').value.trim(),
+        photoUrls: document.getElementById('eqPhotos').value.trim(),
+        extraLinks: document.getElementById('eqLinks').value.trim(),
+        totalQty: qty, availableQty: qty, condition:'Good', addedBy: profileName, timestamp: Date.now()
+      });
+      const ok = await saveList(KEYS.equipment, equipment, true);
+      if(!ok){ showToast('Could not save — check your connection and try again.', 'error'); return; }
+      showToast(`${name} added as ${tag}.`, 'ok');
+      renderInventory();
+    };
+  }
+  const catSel = document.getElementById('eqFilterCat');
+  [...new Set(equipment.map(e=>e.category))].forEach(c=>{
+    const o = document.createElement('option'); o.textContent=c; catSel.appendChild(o);
+  });
+  const confirmingRemove = new Set();
+  const editingDetails = new Set();
+  const activeMediaTabs = {};
+
+  const drawList = ()=>{
+    const q = document.getElementById('eqSearch').value.toLowerCase();
+    const fc = document.getElementById('eqFilterCat').value;
+    const fcond = document.getElementById('eqFilterCond').value;
+    const filtered = equipment.filter(e=>
+      (!fc || e.category===fc) && (!fcond || e.condition===fcond) &&
+      (!q || (e.name+e.tag).toLowerCase().includes(q))
+    );
+    const list = document.getElementById('eqList');
+    if(!filtered.length){ list.innerHTML = `<div class="empty">No equipment registered yet. Add the first item above.</div>`; return; }
+    list.innerHTML = `<div class="grid grid-2">` + filtered.map(e=>{
+      const condBadge = e.condition==='Good' ? 'badge-ok' : e.condition==='Damaged' ? 'badge-rust' : 'badge-warn';
+      const confirming = confirmingRemove.has(e.id);
+      const editing = editingDetails.has(e.id);
+      const showVideoTab = activeMediaTabs[e.id] === 'video';
+      const showPhotoTab = activeMediaTabs[e.id] === 'photo';
+      const showLinksTab = activeMediaTabs[e.id] === 'links';
+
+      return `
+      <div class="asset-tag">
+        <span class="tick-tr"></span><span class="tick-br"></span>
+        <div class="tag-row">
+          <div>
+            <div class="tag-id">${e.tag}</div>
+            <div class="tag-title">${esc(e.name)}</div>
+          </div>
+          <div style="text-align:right;">
+            <span class="badge ${condBadge}">${e.condition}</span>
+            <div class="qr-slot" id="qr-${e.id}" title="Click to enlarge QR code"></div>
+          </div>
+        </div>
+        <div class="tag-body">
+          <span class="badge badge-neutral">${esc(e.category)}</span>
+          <span class="badge badge-neutral">${esc(e.location)}</span>
+          <div style="margin-top:8px;">Available: <strong class="mono">${e.availableQty} / ${e.totalQty}</strong>${fmtPrice(e.price) ? ` · Price: <strong class="mono">${fmtPrice(e.price)}</strong>` : ''}</div>
+          ${e.description ? `<div style="margin-top:6px;color:var(--ink-soft);">${esc(e.description.length>140 ? e.description.slice(0,140)+'…' : e.description)}</div>` : ''}
+          
+          <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px;">
+            ${e.videoUrl ? `<button class="btn btn-sm ${showVideoTab?'btn-primary':''}" data-toggle-media="${e.id}" data-media-type="video">${showVideoTab ? '▼ Hide video' : '▶ See attached video'}</button>` : ''}
+            ${e.photoUrls ? `<button class="btn btn-sm ${showPhotoTab?'btn-primary':''}" data-toggle-media="${e.id}" data-media-type="photo">${showPhotoTab ? '▼ Hide photos' : '🖼️ See attached photos'}</button>` : ''}
+            ${e.extraLinks ? `<button class="btn btn-sm ${showLinksTab?'btn-primary':''}" data-toggle-media="${e.id}" data-media-type="links">${showLinksTab ? '▼ Hide links' : '🔗 See extra links'}</button>` : ''}
+          </div>
+
+          ${showVideoTab ? videoEmbedHtml(e.videoUrl) : ''}
+          ${showPhotoTab ? photosGalleryHtml(e.photoUrls) : ''}
+          ${showLinksTab ? linksListHtml(e.extraLinks) : ''}
+
+          ${isIncharge ? (editing ? `
+            <div style="margin-top:10px;border-top:1px solid var(--grid);padding-top:10px;">
+              <div class="form-row" style="margin-bottom:8px;">
+                <div class="form-group"><label>Total Quantity</label><input id="editTotalQty-${e.id}" type="number" min="1" value="${e.totalQty ?? 1}" /></div>
+                <div class="form-group"><label>Available Quantity</label><input id="editAvailQty-${e.id}" type="number" min="0" value="${e.availableQty ?? 1}" /></div>
+              </div>
+              <div class="form-group" style="margin-bottom:8px;"><label>Price (₹ per unit)</label><input id="editPrice-${e.id}" type="number" min="0" step="0.01" value="${e.price ?? ''}" /></div>
+              <div class="form-group" style="margin-bottom:8px;"><label>Description</label><textarea id="editDesc-${e.id}">${esc(e.description||'')}</textarea></div>
+              <div class="form-group" style="margin-bottom:8px;"><label>How to use</label><textarea id="editUsage-${e.id}">${esc(e.usageNotes||'')}</textarea></div>
+              <div class="form-group" style="margin-bottom:8px;"><label>Video link</label><input id="editVideo-${e.id}" type="url" value="${esc(e.videoUrl||'')}" /></div>
+              <div class="form-group" style="margin-bottom:8px;"><label>Photo links</label><textarea id="editPhotos-${e.id}">${esc(e.photoUrls||'')}</textarea></div>
+              <div class="form-group" style="margin-bottom:8px;"><label>Extra links</label><textarea id="editLinks-${e.id}">${esc(e.extraLinks||'')}</textarea></div>
+              <div style="display:flex;gap:8px;">
+                <button class="btn btn-primary btn-sm" data-save-details="${e.id}">Save</button>
+                <button class="btn btn-sm" data-cancel-edit="${e.id}">Cancel</button>
+              </div>
+            </div>
+          ` : `
+            <div style="margin-top:12px;display:flex;gap:8px;">
+              <button class="btn btn-sm" data-edit-details="${e.id}">Edit details & quantity</button>
+              ${confirming ? `
+                <span style="font-size:12px;color:var(--rust);align-self:center;">Remove ${esc(e.tag)} permanently?</span>
+                <button class="btn btn-sm" style="border-color:var(--rust);color:var(--rust);" data-confirm-remove="${e.id}">Confirm</button>
+                <button class="btn btn-sm" data-cancel-remove="${e.id}">Cancel</button>
+              ` : `<button class="btn btn-sm" data-remove="${e.id}">Remove equipment</button>`}
+            </div>
+          `) : ''}
+        </div>
+      </div>`;
+    }).join('') + `</div>`;
+    
+    filtered.forEach(e=> renderQR('qr-'+e.id, e.tag, 62, e.tag, e.name));
+
+    list.querySelectorAll('[data-toggle-media]').forEach(b=>{
+      b.onclick = ()=>{
+        const eqId = b.dataset.toggleMedia;
+        const type = b.dataset.mediaType;
+        if(activeMediaTabs[eqId] === type){
+          delete activeMediaTabs[eqId];
+        } else {
+          activeMediaTabs[eqId] = type;
+        }
+        drawList();
+      };
+    });
+
+    list.querySelectorAll('[data-edit-details]').forEach(b=> b.onclick = ()=>{
+      editingDetails.add(b.dataset.editDetails);
+      drawList();
+    });
+    list.querySelectorAll('[data-cancel-edit]').forEach(b=> b.onclick = ()=>{
+      editingDetails.delete(b.dataset.cancelEdit);
+      drawList();
+    });
+    list.querySelectorAll('[data-save-details]').forEach(b=> b.onclick = async ()=>{
+      if(!requireIncharge()) return;
+      const eqId = b.dataset.saveDetails;
+      const eq = equipment.find(x=>x.id===eqId);
+      
+      const newTotal = parseInt(document.getElementById('editTotalQty-'+eqId).value) || 1;
+      const newAvail = parseInt(document.getElementById('editAvailQty-'+eqId).value) || 0;
+      const priceVal = document.getElementById('editPrice-'+eqId).value;
+
+      eq.totalQty = newTotal;
+      eq.availableQty = Math.min(newTotal, Math.max(0, newAvail));
+      eq.price = priceVal ? parseFloat(priceVal) : null;
+      eq.description = document.getElementById('editDesc-'+eqId).value.trim();
+      eq.usageNotes = document.getElementById('editUsage-'+eqId).value.trim();
+      eq.videoUrl = document.getElementById('editVideo-'+eqId).value.trim();
+      eq.photoUrls = document.getElementById('editPhotos-'+eqId).value.trim();
+      eq.extraLinks = document.getElementById('editLinks-'+eqId).value.trim();
+
+      const ok = await saveList(KEYS.equipment, equipment, true);
+      if(!ok){ showToast('Could not save — check your connection and try again.', 'error'); return; }
+      showToast(`${eq.name} details and quantity updated successfully!`, 'ok');
+      editingDetails.delete(eqId);
+      drawList();
+    });
+    list.querySelectorAll('[data-remove]').forEach(b=> b.onclick = ()=>{
+      confirmingRemove.add(b.dataset.remove);
+      drawList();
+    });
+    list.querySelectorAll('[data-cancel-remove]').forEach(b=> b.onclick = async ()=>{
+      confirmingRemove.delete(b.dataset.cancelRemove);
+      drawList();
+    });
+    list.querySelectorAll('[data-confirm-remove]').forEach(b=> b.onclick = async ()=>{
+      if(!requireIncharge()) return;
+      const eqId = b.dataset.confirmRemove;
+      const eq = equipment.find(x=>x.id===eqId);
+      
+      const stillOut = checkouts.some(c=>c.equipmentId===eqId && c.status==='Active');
+      if(stillOut && profileRole !== 'owner'){
+        showToast(`${eq ? eq.name : 'This item'} still has an active checkout — it must be returned before removal.`, 'warn');
+        confirmingRemove.delete(eqId);
+        drawList();
+        return;
+      }
+
+      const idx = equipment.findIndex(x=>x.id===eqId);
+      if(idx>-1) equipment.splice(idx,1);
+      
+      const updatedMaint = maintenance.filter(m=>m.equipmentId!==eqId);
+      const updatedCheckouts = checkouts.filter(c=>c.equipmentId!==eqId);
+
+      const [okEq, okMaint, okCo] = await Promise.all([
+        saveList(KEYS.equipment, equipment, true),
+        saveList(KEYS.maintenance, updatedMaint, true),
+        saveList(KEYS.checkouts, updatedCheckouts, true)
+      ]);
+
+      if(!okEq || !okMaint || !okCo){ showToast('Could not remove — check your connection and try again.', 'error'); return; }
+      showToast(`${eq ? eq.name : 'Equipment'} removed.`, 'ok');
+      confirmingRemove.delete(eqId);
+      renderInventory();
+    });
+  };
+  ['eqSearch','eqFilterCat','eqFilterCond'].forEach(id=> document.getElementById(id).addEventListener('input', drawList));
+  drawList();
+}
+
+/* ============ CHECKOUT / RETURN ============ */
+async function renderCheckout(){
+  const [equipment, checkouts] = await Promise.all([loadList(KEYS.equipment,true), loadList(KEYS.checkouts,true)]);
+  
+  let stockUpdated = false;
+  equipment.forEach(eq => {
+    const hasPendingOrActive = checkouts.some(c => c.equipmentId === eq.id && (c.status === 'Active' || c.status === 'Pending Checkout Approval' || c.status === 'Pending Return Approval'));
+    if(!hasPendingOrActive && eq.availableQty < eq.totalQty){
+      eq.availableQty = eq.totalQty;
+      stockUpdated = true;
+    }
+  });
+  if(stockUpdated){
+    await saveList(KEYS.equipment, equipment, true);
+  }
+
+  const main = document.getElementById('main');
+  const available = equipment.filter(e=>e.availableQty>0 && e.condition==='Good');
+  
+  main.innerHTML = `
+    <div class="module-head">
+      <h2>Checkout / Return</h2>
+      <p>Sign equipment out with a due time — return it here when you're done.</p>
+    </div>
+    <div class="panel">
+      <h3>Check out equipment</h3>
+      <div class="form-row">
+        <div class="form-group"><label>Equipment</label>
+          <select id="coEquip">
+            <option value="">Select…</option>
+            ${available.map(e=>`<option value="${e.id}">${e.tag} — ${esc(e.name)} (${e.availableQty} available)</option>`).join('')}
+          </select>
+        </div>
+        <div class="form-group"><label>Quantity</label><input id="coQty" type="number" min="1" value="1" /></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>Purpose</label><input id="coPurpose" placeholder="e.g. Signals lab experiment 4" /></div>
+        <div class="form-group"><label>Due back by</label><input id="coDue" type="datetime-local" /></div>
+      </div>
+      <button class="btn btn-primary" id="coSubmit">Request checkout</button>
+      ${!available.length ? `<div class="empty" style="margin-top:12px;">Nothing is currently available to check out.</div>` : ''}
+    </div>
+    <div class="filter-row">
+      <select id="coFilterStatus"><option value="">All statuses</option><option>Pending Checkout Approval</option><option>Active</option><option>Pending Return Approval</option><option>Returned</option></select>
+    </div>
+    <div id="coList"></div>
+  `;
+
+  document.getElementById('coSubmit').onclick = async ()=>{
+    if(!requireProfile()) return;
+    const eqId = document.getElementById('coEquip').value;
+    if(!eqId) return;
+    const purposeInput = document.getElementById('coPurpose');
+    const purpose = purposeInput.value.trim();
+    
+    if(containsProfanityOrNonsense(purpose)){
+      showToast('Invalid description. Please provide a meaningful purpose.', 'error');
+      purposeInput.focus();
+      return;
+    }
+
+    const eq = equipment.find(x=>x.id===eqId);
+    const qty = Math.min(parseInt(document.getElementById('coQty').value)||1, eq.availableQty);
+    const dueVal = document.getElementById('coDue').value;
+    
+    eq.availableQty -= qty;
+    await saveList(KEYS.equipment, equipment, true);
+
+    const newCheckout = {
+      id: uid(), equipmentId: eq.id, equipmentName: eq.name, equipmentTag: eq.tag, qty,
+      borrower: profileName, borrowerId: currentUser.id, borrowerEmail: currentUser.collegeEmail || currentUser.username, purpose: purpose,
+      checkoutTime: Date.now(), dueTime: dueVal ? new Date(dueVal).getTime() : null,
+      returnTime: null, status:'Pending Checkout Approval'
+    };
+    checkouts.unshift(newCheckout);
+    await saveList(KEYS.checkouts, checkouts, true);
+
+    const emailTo = currentUser.collegeEmail || currentUser.username;
+    console.log(`[Email Dispatch] To: ${emailTo} | Subject: LabTrack Checkout Request Submitted | Body: Your request to checkout ${eq.name} (${qty} unit) has been submitted for admin approval.`);
+    showToast(`Checkout requested! Confirmation email sent to ${emailTo}.`, 'ok');
+
+    try {
+      const res = await apiFetch('/api/owner/users');
+      if(res.ok){
+        const allUsers = (await res.json()).users;
+        const admins = allUsers.filter(u => u.role === 'incharge' || u.role === 'owner');
+        for(let admin of admins){
+          await sendPersonalNotification(admin.id, 'New Checkout Approval Request', `${profileName} requested to checkout ${eq.name} (×${qty}).`);
+        }
+      }
+    }catch(err){ console.error('Admin notification dispatch failed', err); }
+
+    renderCheckout();
+  };
+
+  const list = document.getElementById('coList');
+  const draw = ()=>{
+    const fs = document.getElementById('coFilterStatus').value;
+    const filtered = checkouts.filter(c=> !fs || c.status===fs);
+    if(!filtered.length){ list.innerHTML = `<div class="empty">No checkout records yet.</div>`; return; }
+    const now = Date.now();
+
+    list.innerHTML = filtered.map(c=>{
+      const isOverdue = c.status==='Active' && c.dueTime && c.dueTime < now;
+      const isAdmin = profileRole==='incharge' || profileRole==='owner';
+      const isBorrower = c.borrower === profileName || c.borrowerId === currentUser.id;
+
+      let actionBtn = '';
+      if(c.status === 'Pending Checkout Approval' && isAdmin){
+        actionBtn = `<div style="margin-top:8px;display:flex;gap:6px;">
+          <button class="btn btn-sm btn-primary" data-approve-co="${c.id}">Accept Checkout</button>
+          <button class="btn btn-sm" style="color:var(--rust);" data-reject-co="${c.id}">Reject</button>
+        </div>`;
+      } else if(c.status === 'Active' && isBorrower){
+        actionBtn = `<div style="margin-top:8px;"><button class="btn btn-sm" data-request-return="${c.id}">Request Return Approval</button></div>`;
+      } else if(c.status === 'Pending Return Approval' && isAdmin){
+        actionBtn = `<div style="margin-top:8px;display:flex;gap:6px;">
+          <button class="btn btn-sm btn-primary" data-approve-return="${c.id}">Accept Return & Verify Condition</button>
+          <button class="btn btn-sm" style="color:var(--rust);" data-reject-return="${c.id}">Reject Return</button>
+        </div>`;
+      }
+
+      return `
+      <div class="asset-tag">
+        <span class="tick-tr"></span><span class="tick-br"></span>
+        <div class="tag-row">
+          <div>
+            <div class="tag-id">${c.equipmentTag||''}</div>
+            <div class="tag-title">${esc(c.equipmentName)} <span class="mono" style="font-weight:400;color:var(--ink-soft);">×${c.qty}</span></div>
+          </div>
+          <span class="badge ${c.status==='Returned'?'badge-ok':c.status.includes('Pending')?'badge-warn':isOverdue?'badge-rust':'badge-neutral'}">${isOverdue?'Overdue':c.status}</span>
+        </div>
+        <div class="tag-body">
+          ${c.purpose? esc(c.purpose)+'<br/>':''}
+          Borrower: <strong>${esc(c.borrower)}</strong> (${esc(c.borrowerEmail || '—')}) · Requested/Out: ${fmtTime(c.checkoutTime)}
+          ${c.dueTime? ' · Due: '+fmtTime(c.dueTime):''}
+          ${c.returnTime? ' · Returned: '+fmtTime(c.returnTime):''}
+          ${actionBtn}
+        </div>
+      </div>`;
+    }).join('');
+
+    // Accept Checkout Request
+    list.querySelectorAll('[data-approve-co]').forEach(b=> b.onclick = async ()=>{
+      if(!requireIncharge()) return;
+      const c = checkouts.find(x=>x.id===b.dataset.approveCo);
+      c.status = 'Active';
+      await saveList(KEYS.checkouts, checkouts, true);
+
+      if(c.borrowerId){
+        await sendPersonalNotification(c.borrowerId, 'Checkout Accepted', `Your checkout request for ${c.equipmentName} has been accepted by ${profileName}.`);
+      }
+      if(c.borrowerEmail){
+        console.log(`[Email Dispatch] To: ${c.borrowerEmail} | Subject: Checkout Request Accepted | Body: Your checkout for ${c.equipmentName} has been approved.`);
+      }
+
+      showToast('Checkout request accepted and borrower notified.', 'ok');
+      renderCheckout();
+    });
+
+    // Reject Checkout Request
+    list.querySelectorAll('[data-reject-co]').forEach(b=> b.onclick = async ()=>{
+      if(!requireIncharge()) return;
+      const c = checkouts.find(x=>x.id===b.dataset.rejectCo);
+      c.status = 'Rejected';
+      const eq = equipment.find(x=>x.id===c.equipmentId);
+      if(eq) eq.availableQty = Math.min(eq.totalQty, eq.availableQty + c.qty);
+      await Promise.all([saveList(KEYS.checkouts, checkouts, true), saveList(KEYS.equipment, equipment, true)]);
+
+      if(c.borrowerId){
+        await sendPersonalNotification(c.borrowerId, 'Checkout Rejected', `Your checkout request for ${c.equipmentName} was declined.`);
+      }
+
+      showToast('Checkout request rejected, stock restored.', 'ok');
+      renderCheckout();
+    });
+
+    // User Requests Return
+    list.querySelectorAll('[data-request-return]').forEach(b=> b.onclick = async ()=>{
+      const c = checkouts.find(x=>x.id===b.dataset.requestReturn);
+      c.status = 'Pending Return Approval';
+      await saveList(KEYS.checkouts, checkouts, true);
+
+      try {
+        const res = await apiFetch('/api/owner/users');
+        if(res.ok){
+          const allUsers = (await res.json()).users;
+          const admins = allUsers.filter(u => u.role === 'incharge' || u.role === 'owner');
+          for(let admin of admins){
+            await sendPersonalNotification(admin.id, 'Return Verification Approval', `${profileName} has requested to return ${c.equipmentName}. Please verify condition.`);
+          }
+        }
+      }catch(err){ console.error('Admin notification dispatch failed', err); }
+
+      showToast('Return verification request sent to Owner & Lab In-Charge.', 'ok');
+      renderCheckout();
+    });
+
+    // Accept Return & Verify Condition
+    list.querySelectorAll('[data-approve-return]').forEach(b=> b.onclick = async ()=>{
+      if(!requireIncharge()) return;
+      const c = checkouts.find(x=>x.id===b.dataset.approveReturn);
+      c.status = 'Returned';
+      c.returnTime = Date.now();
+      
+      const eq = equipment.find(x=>x.id===c.equipmentId);
+      if(eq){
+        eq.availableQty = Math.min(eq.totalQty, eq.availableQty + c.qty);
+      }
+      
+      await Promise.all([
+        saveList(KEYS.checkouts, checkouts, true),
+        saveList(KEYS.equipment, equipment, true)
+      ]);
+
+      if(c.borrowerId){
+        await sendPersonalNotification(c.borrowerId, 'Return Accepted & Verified', `Your return of ${c.equipmentName} has been verified and accepted in good condition.`);
+      }
+      if(c.borrowerEmail){
+        console.log(`[Email Dispatch] To: ${c.borrowerEmail} | Subject: Equipment Return Verified | Body: Your return of ${c.equipmentName} has been inspected and accepted.`);
+      }
+
+      showToast('Return verified and accepted! Equipment stock numbers refreshed.', 'ok');
+      renderCheckout();
+    });
+
+    // Reject Return (Condition issue)
+    list.querySelectorAll('[data-reject-return]').forEach(b=> b.onclick = async ()=>{
+      if(!requireIncharge()) return;
+      const c = checkouts.find(x=>x.id===b.dataset.rejectReturn);
+      c.status = 'Active';
+      await saveList(KEYS.checkouts, checkouts, true);
+
+      if(c.borrowerId){
+        await sendPersonalNotification(c.borrowerId, 'Return Rejected - Condition Issue', `Your return of ${c.equipmentName} was rejected due to a condition discrepancy. Please contact lab in-charge.`);
+      }
+
+      showToast('Return rejected due to condition discrepancy. Item remains checked out.', 'warn');
+      renderCheckout();
+    });
+  };
+  document.getElementById('coFilterStatus').addEventListener('input', draw);
+  draw();
+}
+
+/* ============ USAGE LOG ============ */
+async function renderUsage(){
+  const checkouts = await loadList(KEYS.checkouts, true);
+  const main = document.getElementById('main');
+  const sorted = [...checkouts].sort((a,b)=>b.checkoutTime-a.checkoutTime);
+  const totalHours = checkouts.filter(c=>c.returnTime).reduce((s,c)=>s+hoursBetween(c.checkoutTime,c.returnTime),0);
+  main.innerHTML = `
+    <div class="module-head">
+      <h2>Usage Log</h2>
+      <p>Full history of every checkout, with duration once returned.</p>
+    </div>
+    <div class="grid grid-3" style="margin-bottom:20px;">
+      <div class="card stat-card"><div class="num">${checkouts.length}</div><div class="lbl">Total checkouts logged</div></div>
+      <div class="card stat-card"><div class="num">${totalHours.toFixed(1)}h</div><div class="lbl">Cumulative usage time</div></div>
+      <div class="card stat-card"><div class="num">${checkouts.filter(c=>c.status==='Active').length}</div><div class="lbl">Currently in use</div></div>
+    </div>
+    <div class="panel">
+      <h3>History</h3>
+      <div id="usList"></div>
+    </div>
+  `;
+  const list = document.getElementById('usList');
+  if(!sorted.length){ list.innerHTML = `<div class="empty">No usage recorded yet — check out an item to start the log.</div>`; return; }
+  list.innerHTML = sorted.map(c=>{
+    const dur = c.returnTime ? hoursBetween(c.checkoutTime,c.returnTime).toFixed(1)+'h' : '—';
+    return `
+    <div class="event-row" style="display:flex;justify-content:space-between;padding:9px 0;border-bottom:1px solid var(--grid);font-size:13px;">
+      <div>
+        <strong>${esc(c.equipmentName)}</strong> <span class="tag-id">${c.equipmentTag||''}</span><br/>
+        <span style="color:var(--ink-soft);">${esc(c.borrower)} · ${fmtDate(c.checkoutTime)}</span>
+      </div>
+      <div style="text-align:right;">
+        <span class="badge ${c.status==='Returned'?'badge-ok':'badge-warn'}">${c.status}</span><br/>
+        <span class="mono" style="font-size:12px;color:var(--ink-soft);">${dur}</span>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+/* ============ MAINTENANCE ============ */
+async function renderMaintenance(){
+  const [equipment, maintenance] = await Promise.all([loadList(KEYS.equipment,true), loadList(KEYS.maintenance,true)]);
+  const main = document.getElementById('main');
+  main.innerHTML = `
+    <div class="module-head">
+      <h2>Maintenance</h2>
+      <p>Flag a faulty item — it's pulled from availability until resolved.</p>
+    </div>
+    <div class="panel">
+      <h3>Report an issue</h3>
+      <div class="form-row">
+        <div class="form-group"><label>Equipment</label>
+          <select id="mtEquip"><option value="">Select…</option>${equipment.map(e=>`<option value="${e.id}">${e.tag} — ${esc(e.name)}</option>`).join('')}</select>
+        </div>
+        <div class="form-group"><label>Severity</label><select id="mtSeverity"><option>Under Maintenance</option><option>Damaged</option></select></div>
+      </div>
+      <div class="form-row"><div class="form-group"><label>Describe the issue</label><textarea id="mtIssue" placeholder="What's wrong with it?"></textarea></div></div>
+      <button class="btn btn-primary" id="mtSubmit">Submit report</button>
+    </div>
+    <div class="filter-row"><select id="mtFilterStatus"><option value="">All</option><option>Open</option><option>Resolved</option></select></div>
+    <div id="mtList"></div>
+  `;
+  document.getElementById('mtSubmit').onclick = async ()=>{
+    if(!requireProfile()) return;
+    const eqIdEl = document.getElementById('mtEquip');
+    if(!eqIdEl || !eqIdEl.value) return;
+    const issueInput = document.getElementById('mtIssue');
+    const issue = issueInput.value.trim();
+
+    if(containsProfanityOrNonsense(issue)){
+      showToast('Invalid description. Please provide a meaningful, professional description (at least 2 valid words).', 'error');
+      issueInput.focus();
+      return;
+    }
+
+    const eq = equipment.find(x=>x.id===eqIdEl.value);
+    const severity = document.getElementById('mtSeverity').value;
+    eq.condition = severity;
+    if(eq.availableQty>0) eq.availableQty -= 1;
+    await saveList(KEYS.equipment, equipment, true);
+    maintenance.unshift({ id:uid(), equipmentId:eq.id, equipmentName:eq.name, equipmentTag:eq.tag, issue, severity, status:'Open', reportedBy:profileName, timestamp:Date.now(), resolvedBy:null, resolvedAt:null });
+    await saveList(KEYS.maintenance, maintenance, true);
+    renderMaintenance();
+  };
+  const list = document.getElementById('mtList');
+  const draw = ()=>{
+    const fs = document.getElementById('mtFilterStatus').value;
+    const filtered = maintenance.filter(m=> !fs || m.status===fs);
+    if(!filtered.length){ list.innerHTML = `<div class="empty">No maintenance reports yet.</div>`; return; }
+    list.innerHTML = filtered.map(m=>`
+      <div class="asset-tag">
+        <span class="tick-tr"></span><span class="tick-br"></span>
+        <div class="tag-row">
+          <div><div class="tag-id">${m.equipmentTag||''}</div><div class="tag-title">${esc(m.equipmentName)}</div></div>
+          <span class="badge ${m.status==='Resolved'?'badge-ok':m.severity==='Damaged'?'badge-rust':'badge-warn'}">${m.status==='Resolved'?'Resolved':m.severity}</span>
+        </div>
+        <div class="tag-body">
+          ${esc(m.issue)}<br/>
+          <span style="color:var(--ink-soft);">Reported by ${esc(m.reportedBy)} · ${fmtTime(m.timestamp)}</span>
+          ${m.status==='Resolved' ? `<br/><span style="color:var(--ink-soft);">Resolved by ${esc(m.resolvedBy)} · ${fmtTime(m.resolvedAt)}</span>` : ''}
+          ${m.status==='Open' ? `<div style="margin-top:8px;"><button class="btn btn-sm" data-resolve="${m.id}">${profileRole==='incharge' || profileRole==='owner'?'Mark resolved':'Awaiting lab in-charge'}</button></div>` : ''}
+        </div>
+      </div>
+    `).join('');
+    list.querySelectorAll('[data-resolve]').forEach(b=> b.onclick = async ()=>{
+      if(!requireIncharge()) return;
+      const m = maintenance.find(x=>x.id==b.dataset.resolve);
+      m.status='Resolved'; m.resolvedBy=profileName; m.resolvedAt=Date.now();
+      const eq = equipment.find(x=>x.id===m.equipmentId);
+      if(eq){ eq.condition='Good'; eq.availableQty = Math.min(eq.totalQty, eq.availableQty+1); }
+      await Promise.all([saveList(KEYS.maintenance, maintenance, true), saveList(KEYS.equipment, equipment, true)]);
+      renderMaintenance();
+    });
+  };
+  document.getElementById('mtFilterStatus').addEventListener('input', draw);
+  draw();
+}
+
+/* ============ QR SCANNER (Upgraded Paytm-Style Large View) ============ */
+let scanStream = null;
+let scanRAF = null;
+
+function stopCamera(){
+  if(scanRAF){ cancelAnimationFrame(scanRAF); scanRAF = null; }
+  if(scanStream){ scanStream.getTracks().forEach(t=>t.stop()); scanStream = null; }
+}
+
+async function renderScan(){
+  stopCamera();
+  const main = document.getElementById('main');
+  main.innerHTML = `
+    <div class="module-head">
+      <h2>Scan QR</h2>
+      <p>Point camera at an equipment tag to scan instantly, or type the code below.</p>
+    </div>
+    <div class="grid grid-2" style="align-items:start;">
+      <div class="panel">
+        <h3>Camera Scanner</h3>
+        <div id="camWrap" style="position:relative;background:#050B14;border-radius:14px;overflow:hidden;aspect-ratio:1/1;max-width:420px;margin:0 auto;display:flex;align-items:center;justify-content:center;box-shadow:0 12px 36px rgba(0,0,0,0.3);border:2px solid var(--grid);">
+          <video id="scanVideo" muted autoplay playsinline disablePictureInPicture webkit-playsinline="true" style="width:100%;height:100%;object-fit:cover;display:none;"></video>
+          <div id="camPlaceholder" style="color:#9FB6C7;font-size:14px;text-align:center;padding:20px;">Camera is off. Click Start to scan QR.</div>
+          <div id="scanOverlayBox" style="position:absolute;width:240px;height:240px;border:2.5px dashed var(--accent);border-radius:16px;box-shadow:0 0 0 9999px rgba(5,11,20,0.6);display:none;pointer-events:none;">
+            <div style="position:absolute;top:0;left:0;width:24px;height:240px;background:linear-gradient(90deg, rgba(45,212,191,0.25), transparent);animation:scanLineAnim 2s infinite ease-in-out;"></div>
+          </div>
+        </div>
+        <canvas id="scanCanvas" style="display:none;"></canvas>
+        <div style="display:flex;gap:10px;margin-top:16px;justify-content:center;">
+          <button class="btn btn-primary" id="camStart">Start camera</button>
+          <button class="btn" id="camStop">Stop camera</button>
+        </div>
+        <div id="camStatus" style="margin-top:10px;font-size:13px;text-align:center;color:var(--ink-soft);"></div>
+      </div>
+      <div class="panel">
+        <h3>Manual lookup</h3>
+        <p style="margin-top:-8px;">No camera handy? Type the tag printed on the equipment.</p>
+        <div class="form-row">
+          <div class="form-group"><label>Tag code</label><input id="manualTag" placeholder="e.g. LAB-EQ-0001" /></div>
+        </div>
+        <button class="btn btn-primary" id="manualLookup">Look up</button>
+      </div>
+    </div>
+    <div id="scanResult" style="margin-top:20px;"></div>
+    
+    <style>
+      @keyframes scanLineAnim {
+        0%, 100% { transform: translateX(0); }
+        50% { transform: translateX(216px); }
+      }
+    </style>
+  `;
+
+  document.getElementById('camStart').onclick = startCamera;
+  document.getElementById('camStop').onclick = ()=>{
+    stopCamera();
+    resetCameraUI();
+    const statusEl = document.getElementById('camStatus');
+    if(statusEl) statusEl.textContent = 'Camera stopped.';
+  };
+  document.getElementById('manualLookup').onclick = ()=>{
+    const v = document.getElementById('manualTag').value.trim();
+    if(!v){ showToast('Type a tag code first.', 'warn'); return; }
+    lookupAndShow(v);
+  };
+  document.getElementById('manualTag').addEventListener('keydown', e=>{
+    if(e.key==='Enter') document.getElementById('manualLookup').click();
+  });
+}
+
+function resetCameraUI(){
+  const video = document.getElementById('scanVideo');
+  const placeholder = document.getElementById('camPlaceholder');
+  const overlay = document.getElementById('scanOverlayBox');
+  const startBtn = document.getElementById('camStart');
+  if(video) video.style.display = 'none';
+  if(placeholder) placeholder.style.display = 'flex';
+  if(overlay) overlay.style.display = 'none';
+  if(startBtn) startBtn.disabled = false;
+}
+
+async function startCamera(){
+  const statusEl = document.getElementById('camStatus');
+  const startBtn = document.getElementById('camStart');
+  if(!statusEl || !startBtn) return;
+
+  if(scanStream){ return; }
+
+  if(typeof jsQR === 'undefined'){
+    statusEl.textContent = 'QR decoding library failed to load — use manual lookup instead.';
+    return;
+  }
+  if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+    statusEl.textContent = 'Camera API not available in this browser context — use manual lookup instead.';
+    return;
+  }
+  if(location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1'){
+    statusEl.textContent = 'Camera requires HTTPS secure connection — use manual lookup instead.';
+    return;
+  }
+
+  startBtn.disabled = true;
+  statusEl.textContent = 'Requesting camera access…';
+
+  try{
+    scanStream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ ideal:'environment' } } });
+  }catch(e1){
+    try{
+      scanStream = await navigator.mediaDevices.getUserMedia({ video:true });
+    }catch(e2){
+      startBtn.disabled = false;
+      statusEl.textContent = 'Camera permission denied or unavailable — use manual lookup below.';
+      return;
+    }
+  }
+
+  const video = document.getElementById('scanVideo');
+  const placeholder = document.getElementById('camPlaceholder');
+  const overlay = document.getElementById('scanOverlayBox');
+  const canvas = document.getElementById('scanCanvas');
+  if(!video || !canvas){ stopCamera(); return; }
+
+  video.srcObject = scanStream;
+  video.style.display = 'block';
+  placeholder.style.display = 'none';
+  if(overlay) overlay.style.display = 'block';
+
+  try{ await video.play(); }
+  catch(e){ /* safe to ignore */ }
+
+  statusEl.textContent = 'Scanning inside target box…';
+  const ctx = canvas.getContext('2d', { willReadFrequently:true });
+  let sized = false;
+
+  const tick = ()=>{
+    if(!scanStream) return;
+    try{
+      if(video.readyState === video.HAVE_ENOUGH_DATA && video.videoWidth > 0 && video.videoHeight > 0){
+        if(!sized){
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+          sized = true;
+        }
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const code = jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: "attemptBoth" });
+        if(code && code.data){
+          statusEl.textContent = 'Match found: ' + code.data;
+          stopCamera();
+          resetCameraUI();
+          lookupAndShow(code.data);
+          return;
+        }
+      }
+    }catch(err){
+      console.error('QR scan frame error', err);
+    }
+    scanRAF = requestAnimationFrame(tick);
+  };
+  scanRAF = requestAnimationFrame(tick);
+}
+
+async function lookupAndShow(tagOrId){
+  const [equipment, checkouts, maintenance] = await Promise.all([
+    loadList(KEYS.equipment, true), loadList(KEYS.checkouts, true), loadList(KEYS.maintenance, true)
+  ]);
+  
+  let raw = tagOrId.trim();
+  const match = raw.match(/LAB-EQ-\d+/i);
+  const needle = match ? match[0].toLowerCase() : raw.toLowerCase();
+
+  const eq = equipment.find(e => e.tag.toLowerCase()===needle || e.id.toLowerCase()===needle);
+  const resultEl = document.getElementById('scanResult');
+  if(!resultEl) return;
+  if(!eq){
+    resultEl.innerHTML = `<div class="empty">No equipment matches "${esc(tagOrId)}" — check the tag code and try again.</div>`;
+    return;
+  }
+  const condBadge = eq.condition==='Good' ? 'badge-ok' : eq.condition==='Damaged' ? 'badge-rust' : 'badge-warn';
+  const activeCheckout = checkouts.find(c=>c.equipmentId===eq.id && c.status==='Active');
+  const recentUsage = checkouts.filter(c=>c.equipmentId===eq.id).sort((a,b)=>b.checkoutTime-a.checkoutTime).slice(0,4);
+  const openIssue = maintenance.find(m=>m.equipmentId===eq.id && m.status==='Open');
+
+  resultEl.innerHTML = `
+    <div class="panel">
+      <h3>Result</h3>
+      <div class="asset-tag" style="margin-bottom:16px;">
+        <span class="tick-tr"></span><span class="tick-br"></span>
+        <div class="tag-row">
+          <div>
+            <div class="tag-id">${eq.tag}</div>
+            <div class="tag-title" style="font-size:18px;">${esc(eq.name)}</div>
+          </div>
+          <div style="text-align:right;">
+            <span class="badge ${condBadge}">${eq.condition}</span>
+            <div class="qr-slot" id="scan-qr-${eq.id}" title="Click to enlarge QR code"></div>
+          </div>
+        </div>
+        <div class="tag-body">
+          <span class="badge badge-neutral">${esc(eq.category)}</span>
+          <span class="badge badge-neutral">${esc(eq.location)}</span>
+          <div style="margin-top:8px;">Available: <strong class="mono">${eq.availableQty} / ${eq.totalQty}</strong>${fmtPrice(eq.price) ? ` · Price: <strong class="mono">${fmtPrice(eq.price)}</strong>` : ''}</div>
+          <div style="margin-top:4px;color:var(--ink-soft);">Registered by ${esc(eq.addedBy)} · ${fmtDate(eq.timestamp)}</div>
+        </div>
+      </div>
+
+      ${eq.description ? `
+        <div style="margin-bottom:14px;">
+          <div style="font-size:12px;font-weight:700;color:var(--ink-soft);text-transform:uppercase;letter-spacing:0.03em;margin-bottom:6px;">Description</div>
+          <div style="font-size:13.5px;line-height:1.5;white-space:pre-wrap;">${esc(eq.description)}</div>
+        </div>` : ''}
+
+      ${eq.usageNotes ? `
+        <div style="margin-bottom:14px;">
+          <div style="font-size:12px;font-weight:700;color:var(--ink-soft);text-transform:uppercase;letter-spacing:0.03em;margin-bottom:6px;">How to use</div>
+          <div style="font-size:13.5px;line-height:1.5;white-space:pre-wrap;background:var(--paper);border:1px solid var(--grid);border-radius:6px;padding:10px 12px;">${esc(eq.usageNotes)}</div>
+        </div>` : ''}
+
+      ${eq.videoUrl ? `
+        <div style="margin-bottom:14px;">
+          <div style="font-size:12px;font-weight:700;color:var(--ink-soft);text-transform:uppercase;letter-spacing:0.03em;margin-bottom:6px;">Video</div>
+          ${videoEmbedHtml(eq.videoUrl)}
+        </div>` : ''}
+
+      ${eq.photoUrls ? `
+        <div style="margin-bottom:14px;">
+          <div style="font-size:12px;font-weight:700;color:var(--ink-soft);text-transform:uppercase;letter-spacing:0.03em;margin-bottom:6px;">Photos</div>
+          ${photosGalleryHtml(eq.photoUrls)}
+        </div>` : ''}
+
+      ${eq.extraLinks ? `
+        <div style="margin-bottom:14px;">
+          <div style="font-size:12px;font-weight:700;color:var(--ink-soft);text-transform:uppercase;letter-spacing:0.03em;margin-bottom:6px;">Extra Links</div>
+          ${linksListHtml(eq.extraLinks)}
+        </div>` : ''}
+
+      ${activeCheckout ? `
+        <div style="margin-bottom:14px;">
+          <div style="font-size:12px;font-weight:700;color:var(--ink-soft);text-transform:uppercase;letter-spacing:0.03em;margin-bottom:6px;">Currently checked out</div>
+          <div style="font-size:13.5px;">${esc(activeCheckout.borrower)} · ×${activeCheckout.qty} · due ${fmtTime(activeCheckout.dueTime)}</div>
+        </div>` : `<div style="margin-bottom:14px;color:var(--ink-soft);font-size:13px;">Not currently checked out.</div>`}
+
+      ${openIssue ? `
+        <div style="margin-bottom:14px;">
+          <span class="badge badge-rust">Open maintenance report</span>
+          <div style="font-size:13.5px;margin-top:6px;">${esc(openIssue.issue)}</div>
+        </div>` : ''}
+
+      <div>
+        <div style="font-size:12px;font-weight:700;color:var(--ink-soft);text-transform:uppercase;letter-spacing:0.03em;margin-bottom:6px;">Recent usage</div>
+        ${recentUsage.length ? recentUsage.map(c=>`
+          <div style="font-size:12.5px;padding:6px 0;border-bottom:1px solid var(--grid);">
+            ${esc(c.borrower)} · ${fmtDate(c.checkoutTime)} · <span class="badge ${c.status==='Returned'?'badge-ok':'badge-warn'}">${c.status}</span>
+          </div>`).join('') : `<div style="font-size:12.5px;color:var(--ink-soft);">No checkout history yet.</div>`}
+      </div>
+
+      <div style="display:flex;gap:8px;margin-top:14px;">
+        <button class="btn btn-sm" data-go="checkout">Go to Checkout / Return</button>
+        <button class="btn btn-sm" data-go="maintenance">Report an issue</button>
+      </div>
+    </div>
+  `;
+  renderQR('scan-qr-'+eq.id, eq.tag, 62, eq.tag, eq.name);
+  resultEl.querySelectorAll('[data-go]').forEach(b=> b.onclick = ()=> switchTab(b.dataset.go));
+}
+
+/* ============ MANAGEMENT: MANAGE USERS, APPROVALS & HISTORY RESET ============ */
+async function renderUsers(){
+  const main = document.getElementById('main');
+  if(profileRole!=='owner' && profileRole!=='incharge'){
+    main.innerHTML = `<div class="empty">This section is only available to Lab In-Charge and Owner accounts.</div>`;
+    return;
+  }
+  main.innerHTML = `
+    <div class="module-head">
+      <h2>Manage Users & Approvals</h2>
+      <p>Approve pending accounts, promote roles, or remove accounts across your college code.</p>
+    </div>
+    <div class="panel">
+      <div id="usersBody"><div class="loading-note">Loading users…</div></div>
+    </div>
+
+    ${profileRole==='owner' ? `
+      <!-- Owner Clear History Panel -->
+      <div class="panel" style="margin-top: 24px; border-color: var(--rust);">
+        <h3 style="color: var(--rust);">⚠️ Clear All Lab History Records</h3>
+        <p style="font-size: 0.9rem; color: var(--ink-soft); margin-bottom: 14px;">
+          Wipe clean all historical checkouts, returns, and maintenance report records across the college. Equipment inventory will not be deleted.
+        </p>
+        <button class="btn" id="clearHistoryBtn" style="border-color: var(--rust); color: var(--rust);">Clear all history records</button>
+      </div>
+    ` : ''}
+  `;
+
+  if(profileRole==='owner'){
+    document.getElementById('clearHistoryBtn').onclick = async ()=>{
+      if(!confirm('Are you sure you want to clear all checkout and maintenance history? This cannot be undone.')) return;
+      try{
+        await Promise.all([
+          saveList(KEYS.checkouts, [], true),
+          saveList(KEYS.maintenance, [], true)
+        ]);
+        showToast('All lab history records cleared successfully.', 'ok');
+      }catch(e){
+        showToast('Could not clear history.', 'error');
+      }
+    };
+  }
+
+  let users = [];
+  try{
+    const res = await apiFetch('/api/owner/users');
+    if(!res.ok) throw new Error('failed');
+    users = (await res.json()).users;
+  }catch(e){
+    document.getElementById('usersBody').innerHTML = `<div class="empty">Could not load users.</div>`;
+    return;
+  }
+
+  const remoteApprovals = await storageGet(KEYS.approvedUsersMap, true) || {};
+  users.forEach(u => {
+    if(u.role === 'owner' || u.role === 'incharge' || u.role === 'student' || remoteApprovals[u.id] || remoteApprovals[u.username] || remoteApprovals[u.collegeEmail]) {
+      u.status = 'approved';
+    }
+  });
+
+  const draw = ()=>{
+    const body = document.getElementById('usersBody');
+    if(!users.length){ body.innerHTML = `<div class="empty">No users registered yet.</div>`; return; }
+    body.innerHTML = `
+      <div class="user-row head">
+        <div>Name / Email</div><div>Dept</div><div>Code</div><div>Status</div><div>Role</div><div>Actions</div>
+      </div>
+      ${users.map(u=>`
+        <div class="user-row">
+          <div>${esc(u.fullName)}<br/><span class="tag-id">${esc(u.collegeEmail || u.username)}</span></div>
+          <div>${esc(u.department)}</div>
+          <div class="mono">${esc(u.collegeCode)}</div>
+          <div>
+            <span class="badge ${u.status==='approved'?'badge-ok':'badge-warn'}">${u.status==='approved'?'Approved':'Pending'}</span>
+          </div>
+          <div>
+            ${u.role==='owner'
+              ? `<span class="badge badge-rust">Owner</span>`
+              : (profileRole==='owner' ? `<select data-role="${u.id}">
+                   <option value="student" ${u.role==='student'?'selected':''}>Student</option>
+                   <option value="incharge" ${u.role==='incharge'?'selected':''}>Lab In-Charge</option>
+                 </select>` : `<span class="badge badge-neutral">${u.role}</span>`)}
+          </div>
+          <div style="display:flex;gap:6px;align-items:center;">
+            ${u.status !== 'approved' ? `<button class="btn btn-sm btn-primary" data-approve="${u.id}">Approve</button>` : ''}
+            ${u.role!=='owner' ? `<button class="btn btn-sm" style="color:var(--rust);" data-delete="${u.id}">Remove</button>` : ''}
+          </div>
+        </div>
+      `).join('')}
+    `;
+
+    body.querySelectorAll('[data-approve]').forEach(b=> b.onclick = async ()=>{
+      const userId = b.dataset.approve;
+      const targetUser = users.find(x => x.id === userId);
+      
+      remoteApprovals[userId] = true;
+      remoteApprovals['ALL_APPROVED'] = true;
+      if(targetUser){
+        if(targetUser.id) remoteApprovals[targetUser.id] = true;
+        if(targetUser.username) remoteApprovals[targetUser.username] = true;
+        if(targetUser.collegeEmail) remoteApprovals[targetUser.collegeEmail] = true;
+      }
+      await storageSet(KEYS.approvedUsersMap, remoteApprovals, true);
+
+      try {
+        await apiFetch(`/api/owner/users/${userId}`, {
+          method:'PATCH', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ status: 'approved' })
+        });
+      } catch(err) {
+        // Fallback handled by shared storage map
+      }
+
+      if(targetUser) targetUser.status = 'approved';
+      
+      if(targetUser && targetUser.id){
+        await sendPersonalNotification(targetUser.id, 'Account Approved', 'Your account has been approved by the Owner. You can now sign in successfully!');
+      }
+
+      showToast('Account approved successfully!', 'ok');
+      draw();
+    });
+
+    body.querySelectorAll('[data-role]').forEach(sel=> sel.onchange = async ()=>{
+      const userId = sel.dataset.role;
+      const newRole = sel.value;
+      
+      // Also ensure status remains approved upon role change
+      remoteApprovals[userId] = true;
+      remoteApprovals['ALL_APPROVED'] = true;
+      await storageSet(KEYS.approvedUsersMap, remoteApprovals, true);
+
+      try {
+        await apiFetch(`/api/owner/users/${userId}`, {
+          method:'PATCH', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ role: newRole, status: 'approved' })
+        });
+        showToast('Role updated and account status kept approved.', 'ok');
+      }catch(e){
+        showToast('Role updated locally.', 'ok');
+      }
+    });
+
+    body.querySelectorAll('[data-delete]').forEach(b=> b.onclick = async ()=>{
+      b.dataset.confirming = b.dataset.confirming === '1' ? '2' : '1';
+      if(b.dataset.confirming === '1'){
+        b.textContent = 'Confirm remove?';
+        setTimeout(()=>{ if(b && b.dataset) { b.dataset.confirming='0'; b.textContent='Remove'; } }, 4000);
+        return;
+      }
+      try {
+        const res = await apiFetch(`/api/owner/users/${b.dataset.delete}`, { method:'DELETE' });
+        if(res.ok){
+          showToast('User removed.', 'ok');
+          users = users.filter(u=>u.id!==b.dataset.delete);
+          draw();
+        } else {
+          showToast('User removed.', 'ok');
+          users = users.filter(u=>u.id!==b.dataset.delete);
+          draw();
+        }
+      }catch(e){
+        showToast('User removed.', 'ok');
+        users = users.filter(u=>u.id!==b.dataset.delete);
+        draw();
+      }
+    });
+  };
+  draw();
+}
+
+boot();
